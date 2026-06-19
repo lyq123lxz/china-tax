@@ -62,7 +62,7 @@ class BatchConverter:
         # 写入 CSV (优先使用 utf-8-sig 编码，防止 Excel 打开中文乱码)
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-    async def convert_file(self, file_path: Path, mode: str = "csv_to_excel") -> None:
+    async def convert_file(self, file_path: Path, mode: str = "csv_to_excel") -> Path:
         """
         异步封装的单文件转换方法。
         将阻塞的 Pandas 读写操作投递至后台线程池执行，防 NiceGUI 界面卡顿。
@@ -75,11 +75,13 @@ class BatchConverter:
                 output_path = output_path.parent / f"{output_path.stem}_x.xlsx"
             # 使用 asyncio.to_thread 运行阻塞型 I/O 操作
             await asyncio.to_thread(self._convert_csv_to_excel_sync, resolved_file, output_path)
+            return output_path
         elif mode == "excel_to_csv":
             output_path = resolved_file.parent / f"{resolved_file.stem}.csv"
             while output_path.exists():
                 output_path = output_path.parent / f"{output_path.stem}_x.csv"
             await asyncio.to_thread(self._convert_excel_to_csv_sync, resolved_file, output_path)
+            return output_path
         else:
             raise ValueError(f"不支持的转换模式: {mode}")
 
@@ -87,7 +89,7 @@ class BatchConverter:
         self,
         mode: str = "csv_to_excel",
         progress_callback: Callable[[int, int, str, bool, str], None] | None = None
-    ) -> None:
+    ) -> list[Path]:
         """
         异步批量转换指定目录下所有的文件。
         
@@ -99,19 +101,22 @@ class BatchConverter:
         else:
             files = [f for f in self.input_dir.iterdir() if f.is_file() and f.suffix.lower() in (".xlsx", ".xls")]
         total_files = len(files)
+        converted_paths: list[Path] = []
 
         if total_files == 0:
             if progress_callback:
                 progress_callback(0, 0, "", True, "未在输入目录中找到待处理的文件。")
-            return
+            return converted_paths
 
         for idx, file_path in enumerate(files, start=1):
             file_name = file_path.name
             try:
                 # 异步转换单文件，互不干扰
-                await self.convert_file(file_path, mode=mode)
+                out_path = await self.convert_file(file_path, mode=mode)
+                converted_paths.append(out_path)
                 if progress_callback:
                     progress_callback(idx, total_files, file_name, True, f"转换成功: {file_name}")
             except Exception as err:
                 if progress_callback:
                     progress_callback(idx, total_files, file_name, False, f"转换失败: {file_name}。原因: {str(err)}")
+        return converted_paths

@@ -47,7 +47,7 @@ a
 ## 4. 开发进度 (Progress Tracker)
 - [x] **app.py (主入口)**: 已完成 NiceGUI 主控制面板，集成了 **CSV/Excel 互转控制台（支持异步进度更新、本地上传与下拉选择）**。
 - [x] **utils/csv_excel.py (第1模块 - 互转工具)**: 已开发完成。支持 `dtype=str` 长数字安全原则，提供“本机/Linux后端”与“浏览器客户端”双存储位置环境选择，在 CSV 同级目录生成 Excel 且具有 `_x` 重名避让机制，支持客户端自动触发浏览器下载。
-- [ ] **utils/pdf_check.py (第2模块 - 查重清理)**: 待开发。
+- [x] **utils/pdf_check.py (第2模块 - 查重去密清理)**: 已完成。封裝了高魯棒性的 PDFDeduplicator 引擎，支持非阻塞的 asyncio.to_thread 異步批處理、多密碼遍歷解密、解密後記憶體流雜湊查重、去密落盤及結構化審計報告返回。
 - [x] **utils/pdf_md.py (第3模块 - PDF转Markdown)**: 已开发并完美优化完成。支持自适应 lines/text 双层提取与表格裁剪提取、单元格折行缝合、页码注入，并内置了【三层漏斗防线架构】与双重勾稽完整性对账审计引擎（已支持 status="NEED_VISUAL_REVIEW" 路由状态机及 NiceGUI 状态看板联动）。
-- [ ] **config/ & core/ 其它模块**: 框架骨架已建，待具体业务填充。
+- [x] **config/ & core/ 其它模块**: 已完成 PostgreSQL/SQLite 双模连接配置、税额七级超额累进与小微企业分类计算核心算法、社会信用代码与身份证号国标校验、勾稽校验算法，并在 NiceGUI 控制中心实装了 7 大高级交互弹窗与 ZIP 打包归档。
 
