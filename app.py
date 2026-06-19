@@ -1171,15 +1171,19 @@ def main_page() -> None:
             end_date = md_closing.parse_date(md_closing_end_date.value)
             
         all_closing_trades = []
+        all_headers = []
         
         try:
             for file_name, file_bytes in md_closing_uploaded_files:
                 md_content = file_bytes.decode("utf-8", errors="ignore")
                 tables = md_closing.parse_markdown_tables(md_content)
-                trades = md_closing.extract_closing_trades(tables, start_date, end_date)
+                trades, headers = md_closing.extract_closing_trades(tables, start_date, end_date)
                 for t in trades:
                     t["来自文件"] = file_name
                 all_closing_trades.extend(trades)
+                for h in headers:
+                    if h not in all_headers:
+                        all_headers.append(h)
                 
             md_closing_progress.set_value(0.5)
             md_closing_status.set_text("正在生成 Excel 整理表与审计报告...")
@@ -1190,6 +1194,7 @@ def main_page() -> None:
             excel_path, report_path = await asyncio.to_thread(
                 md_closing.generate_closing_report,
                 all_closing_trades,
+                all_headers,
                 out_dir,
                 md_closing_start_date.value or "",
                 md_closing_end_date.value or ""
