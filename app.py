@@ -54,6 +54,7 @@ from nicegui import app, events, ui
 from utils.csv_excel import BatchConverter
 from utils.pdf_md import PDFBatchParser, ParserProgress
 from utils.pdf_check import PDFDeduplicator
+import utils.md_closing as md_closing
 
 # ---------------------------------------------------------
 # 全局引用与状态管理，用于更新 UI 状态
@@ -370,6 +371,13 @@ def main_page() -> None:
     archive_dialog: ui.dialog = None
     config_view_dialog: ui.dialog = None
     system_logs_dialog: ui.dialog = None
+    md_closing_dialog: ui.dialog = None
+    md_closing_progress: ui.linear_progress = None
+    md_closing_status: ui.label = None
+    md_closing_download_container: ui.row = None
+    md_closing_start_date: ui.input = None
+    md_closing_end_date: ui.input = None
+    md_closing_uploaded_files: list[tuple[str, bytes]] = []
 
 
     # =========================================================
@@ -1116,6 +1124,123 @@ def main_page() -> None:
             pdf_status.visible = False
 
     # =========================================================
+    # 模块 11: 平仓数据整理回调函数
+    # =========================================================
+    def handle_md_closing(e: events.ClickEventArguments) -> None:
+        nonlocal md_closing_uploaded_files
+        md_closing_uploaded_files = []
+        if md_closing_download_container:
+            md_closing_download_container.clear()
+            md_closing_download_container.visible = False
+        if md_closing_progress:
+            md_closing_progress.set_value(0.0)
+            md_closing_progress.visible = False
+        if md_closing_status:
+            md_closing_status.set_text("等待上传与整理...")
+            md_closing_status.visible = False
+        md_closing_dialog.open()
+
+    async def on_md_upload(e: events.UploadEventArguments) -> None:
+        try:
+            nonlocal md_closing_uploaded_files
+            data = await e.file.read()
+            md_closing_uploaded_files.append((e.file.name, data))
+            ui.notify(f"Markdown 文件 {e.file.name} 上传并暂存成功！", type="positive", position="top")
+        except Exception as err:
+            ui.notify(f"上传失败: {str(err)}", type="negative", position="top")
+
+    async def run_md_closing_organization() -> None:
+        nonlocal md_closing_uploaded_files
+        if not md_closing_uploaded_files:
+            ui.notify("请先上传至少一个 Markdown 交易明细文件！", type="warning", position="top")
+            return
+            
+        md_closing_progress.set_value(0.0)
+        md_closing_progress.visible = True
+        md_closing_status.visible = True
+        md_closing_status.set_text("正在提取并整理平仓成交明细...")
+        
+        md_closing_download_container.clear()
+        md_closing_download_container.visible = False
+        
+        start_date = None
+        end_date = None
+        if md_closing_start_date.value:
+            start_date = md_closing.parse_date(md_closing_start_date.value)
+        if md_closing_end_date.value:
+            end_date = md_closing.parse_date(md_closing_end_date.value)
+            
+        all_closing_trades = []
+        
+        try:
+            for file_name, file_bytes in md_closing_uploaded_files:
+                md_content = file_bytes.decode("utf-8", errors="ignore")
+                tables = md_closing.parse_markdown_tables(md_content)
+                trades = md_closing.extract_closing_trades(tables, start_date, end_date)
+                for t in trades:
+                    t["来自文件"] = file_name
+                all_closing_trades.extend(trades)
+                
+            md_closing_progress.set_value(0.5)
+            md_closing_status.set_text("正在生成 Excel 整理表与审计报告...")
+            
+            out_dir = OUTPUT_DIR / "closing_summary"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            
+            excel_path, report_path = await asyncio.to_thread(
+                md_closing.generate_closing_report,
+                all_closing_trades,
+                out_dir,
+                md_closing_start_date.value or "",
+                md_closing_end_date.value or ""
+            )
+            
+            zip_file_path = out_dir / "organized_closing_data.zip"
+            if zip_file_path.exists():
+                zip_file_path.unlink()
+                
+            await asyncio.to_thread(create_zip_archive, [excel_path], zip_file_path)
+            
+            md_closing_progress.set_value(1.0)
+            md_closing_status.set_text(f"平仓数据整理完成！匹配到 {len(all_closing_trades)} 笔平仓成交。")
+            
+            try:
+                rel_report = report_path.relative_to(BASE_DIR)
+                report_url = f"/download/{rel_report.as_posix()}"
+                with md_closing_download_container:
+                    ui.link("📊 下载整理报告 (report.md)", report_url, new_tab=True).classes(
+                        "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
+                    )
+            except ValueError:
+                pass
+                
+            if zip_file_path.exists():
+                try:
+                    rel_zip = zip_file_path.relative_to(BASE_DIR)
+                    zip_url = f"/download/{rel_zip.as_posix()}"
+                    with md_closing_download_container:
+                        ui.link("📦 下载全部整理件 (ZIP 打包档)", zip_url, new_tab=True).classes(
+                            "bg-amber-600 hover:bg-amber-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline font-bold"
+                        )
+                except ValueError:
+                    pass
+                    
+            md_closing_download_container.visible = True
+            ui.notify(f"整理成功！提取出 {len(all_closing_trades)} 笔平仓成交数据。", type="positive", position="top")
+            log_action(f"模块 11 执行成功：时间段为 {md_closing_start_date.value or '未限定'} - {md_closing_end_date.value or '未限定'}，匹配到 {len(all_closing_trades)} 笔平仓明细并已生成 ZIP")
+            
+        except Exception as err:
+            md_closing_status.set_text(f"整理失败: {str(err)}")
+            ui.notify(f"数据整理失败: {str(err)}", type="negative", position="top")
+            
+        finally:
+            await asyncio.sleep(5)
+            if md_closing_progress:
+                md_closing_progress.visible = False
+            if md_closing_status:
+                md_closing_status.visible = False
+
+    # =========================================================
     # 智能控制台回调函数与辅助方法 (新模块集成)
     # =========================================================
     sys_log_board: ui.card = None
@@ -1333,8 +1458,8 @@ def main_page() -> None:
                         "w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold py-2 px-3 rounded-lg shadow-sm"
                     )
         
-        # 10 个功能卡的网格布局
-        ui.label("系统控制工具箱 (10 大功能项)").classes("text-base font-semibold text-slate-500 uppercase tracking-wider mt-4")
+        # 11 个功能卡的网格布局
+        ui.label("系统控制工具箱 (11 大功能项)").classes("text-base font-semibold text-slate-500 uppercase tracking-wider mt-4")
         
         with ui.grid().classes("grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 w-full"):
             
@@ -1407,6 +1532,13 @@ def main_page() -> None:
                     ui.label("10. 运行状态与日志").classes("font-bold text-slate-800 text-base")
                     ui.label("监控当前服务的运行状态并实时查阅核心操作日志。").classes("text-xs text-slate-500")
                 ui.button("查阅日志", on_click=handle_system_logs).classes("w-full bg-slate-700 hover:bg-slate-800 text-white rounded-lg py-2 text-sm font-semibold")
+
+            # --- 功能 11: 平仓数据整理 ---
+            with ui.card().classes("hover:shadow-md transition-all duration-300 border border-slate-200 rounded-xl p-5 flex flex-col justify-between h-48 bg-white"):
+                with ui.column().classes("gap-1"):
+                    ui.label("11. 平仓交易整理").classes("font-bold text-slate-800 text-base")
+                    ui.label("上传指定 Markdown 账单文件，按指定时间段提取整理平仓成交的标的，输出 Excel。").classes("text-xs text-slate-500")
+                ui.button("整理平仓数据", on_click=handle_md_closing).classes("w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2 text-sm font-semibold shadow-sm")
 
     # --- CSV/Excel 转换交互对话框 (Dialog) ---
     with ui.dialog() as csv_excel_dialog:
@@ -2159,6 +2291,51 @@ def main_page() -> None:
                 
             with ui.row().classes("w-full justify-end mt-2"):
                 ui.button("关闭", on_click=system_logs_dialog.close).props("flat").classes("text-slate-500 text-sm")
+
+    # --- 模块 11: 平仓交易整理对话框 (Dialog) ---
+    with ui.dialog() as md_closing_dialog:
+        with ui.card().classes("w-[600px] p-6 gap-4 bg-white rounded-xl shadow-2xl"):
+            with ui.row().classes("w-full justify-between items-center"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("filter_alt", size="1.8rem").classes("text-indigo-600")
+                    ui.label("平仓成交数据整理控制台").classes("text-lg font-bold text-slate-800")
+                ui.button(icon="close", on_click=md_closing_dialog.close).props("flat round dense").classes("text-slate-400")
+            
+            ui.separator()
+            
+            ui.label("步骤 1：设定整理交易的时间段 (选填，留空代表不限制)").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+            with ui.row().classes("w-full gap-4"):
+                md_closing_start_date = ui.input(
+                    label="开始日期 (格式: YYYY-MM-DD)",
+                    placeholder="例如: 2026-01-01"
+                ).classes("flex-1")
+                md_closing_end_date = ui.input(
+                    label="结束日期 (格式: YYYY-MM-DD)",
+                    placeholder="例如: 2026-06-30"
+                ).classes("flex-1")
+                
+            ui.label("步骤 2：上传包含交易流水的 Markdown (.md) 文件").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+            ui.upload(
+                label="拖拽或选择模块 3 转换出的 Markdown 成果文件",
+                auto_upload=True,
+                multiple=True,
+                on_upload=on_md_upload
+            ).classes("w-full border border-dashed border-slate-200 rounded-xl p-1").props("accept=.md")
+            
+            # 进度与状态
+            md_closing_progress = ui.linear_progress(value=0.0, show_value=False).classes("w-full rounded-full")
+            md_closing_progress.visible = False
+            md_closing_status = ui.label("等待启动...").classes("text-xs text-slate-500 font-mono")
+            md_closing_status.visible = False
+            
+            # 下载容器 (报告 + 单一 ZIP 文件)
+            md_closing_download_container = ui.row().classes("w-full justify-center gap-2 mt-2")
+            md_closing_download_container.visible = False
+            
+            # 底部动作栏
+            with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                ui.button("取消", on_click=md_closing_dialog.close).props("flat").classes("text-slate-500 text-sm")
+                ui.button("开始提取与整理", on_click=run_md_closing_organization).classes("bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow-sm")
 
     # 頁面載入時強制彈窗輸入機構名稱
     ui.timer(0.1, prompt_bank_name, once=True)
