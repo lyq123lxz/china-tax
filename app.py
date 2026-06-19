@@ -1171,16 +1171,27 @@ def main_page() -> None:
             end_date = md_closing.parse_date(md_closing_end_date.value)
             
         all_closing_trades = []
+        all_open_trades = []
+        all_close_trades = []
         all_headers = []
         
         try:
             for file_name, file_bytes in md_closing_uploaded_files:
                 md_content = file_bytes.decode("utf-8", errors="ignore")
                 tables = md_closing.parse_markdown_tables(md_content)
-                trades, headers = md_closing.extract_closing_trades(tables, start_date, end_date)
-                for t in trades:
+                trades_all, trades_open, trades_close, headers = md_closing.extract_closing_trades(tables, start_date, end_date)
+                
+                for t in trades_all:
                     t["来自文件"] = file_name
-                all_closing_trades.extend(trades)
+                for t in trades_open:
+                    t["来自文件"] = file_name
+                for t in trades_close:
+                    t["来自文件"] = file_name
+                    
+                all_closing_trades.extend(trades_all)
+                all_open_trades.extend(trades_open)
+                all_close_trades.extend(trades_close)
+                
                 for h in headers:
                     if h not in all_headers:
                         all_headers.append(h)
@@ -1194,6 +1205,8 @@ def main_page() -> None:
             excel_path, report_path = await asyncio.to_thread(
                 md_closing.generate_closing_report,
                 all_closing_trades,
+                all_open_trades,
+                all_close_trades,
                 all_headers,
                 out_dir,
                 md_closing_start_date.value or "",
@@ -1207,7 +1220,7 @@ def main_page() -> None:
             await asyncio.to_thread(create_zip_archive, [excel_path], zip_file_path)
             
             md_closing_progress.set_value(1.0)
-            md_closing_status.set_text(f"平仓数据整理完成！匹配到 {len(all_closing_trades)} 笔平仓成交。")
+            md_closing_status.set_text(f"平仓数据整理完成！匹配到 {len(all_close_trades)} 笔平仓成交 (总记录 {len(all_closing_trades)} 笔)。")
             
             try:
                 rel_report = report_path.relative_to(BASE_DIR)
