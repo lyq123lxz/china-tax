@@ -1,0 +1,23 @@
+# Python 快取與編譯檔案
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Python 虛擬環境
+.venv/
+venv/
+ENV/
+env/
+
+# PyCharm 專案設定檔
+.idea/
+
+# 敏感環境變數設定檔
+.env
+
+# 數據與測試檔案（強烈建議忽略真實的券商 PDF 與轉換後的明細）
+*.pdf
+pdf/
+output/
+report.md
