@@ -240,6 +240,10 @@ def log_action(action: str) -> None:
 @ui.page("/")
 def main_page() -> None:
     # --- 局部变量与引用隔离 ---
+    last_csv_upload_time = 0.0
+    last_pdf_dedup_upload_time = 0.0
+    last_pdf_upload_time = 0.0
+
     auto_clear_switch: ui.switch = None
     bank_name_input: ui.input = None
     csv_excel_dialog: ui.dialog = None
@@ -249,6 +253,7 @@ def main_page() -> None:
     dialog_status: ui.label = None
     local_dir_input: ui.input = None
     source_type: ui.toggle = None
+    csv_download_container: ui.row = None
 
     pdf_md_dialog: ui.dialog = None
     pdf_file_select: ui.select = None
@@ -259,6 +264,7 @@ def main_page() -> None:
     pdf_source_type: ui.toggle = None
     pdf_log_board: ui.card = None
     pdf_log_container: ui.column = None
+    pdf_download_container: ui.row = None
 
     pdf_dedup_dialog: ui.dialog = None
     pdf_dedup_file_select: ui.select = None
@@ -307,8 +313,38 @@ def main_page() -> None:
 
     async def on_file_upload(e: events.UploadEventArguments) -> None:
         try:
+            import time
+            nonlocal last_csv_upload_time
             input_dir = INPUT_CSV_DIR / "client_temp"
             input_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 若為新上傳階段（與上次上傳間隔 > 2 秒），則清空原來的上傳文件及記錄
+            now = time.time()
+            if now - last_csv_upload_time > 2.0:
+                # 1. 刪除 client_temp 底下的舊檔案
+                for f in input_dir.iterdir():
+                    if f.is_file() and f.name != ".gitkeep":
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
+                # 2. 清空下拉選單
+                if client_file_select:
+                    client_file_select.options = ["[全部已上传文件]"]
+                    client_file_select.value = "[全部已上传文件]"
+                    client_file_select.update()
+                # 3. 清空下載容器與進度條
+                if csv_download_container:
+                    csv_download_container.clear()
+                    csv_download_container.visible = False
+                if dialog_progress:
+                    dialog_progress.set_value(0.0)
+                    dialog_progress.visible = False
+                if dialog_status:
+                    dialog_status.set_text("")
+                    dialog_status.visible = False
+            last_csv_upload_time = now
+
             file_path = input_dir / e.file.name
             data = await e.file.read()
             file_path.write_bytes(data)
@@ -514,10 +550,44 @@ def main_page() -> None:
 
     async def on_pdf_dedup_upload(e: events.UploadEventArguments) -> None:
         try:
+            import time
+            nonlocal last_pdf_dedup_upload_time
             input_dir = INPUT_PDF_DIR / "client_dedup_temp"
             input_dir.mkdir(parents=True, exist_ok=True)
-            file_path = input_dir / e.file.name
             
+            # 若為新上傳階段（與上次上傳間隔 > 2 秒），則清空原來的上傳文件及記錄
+            now = time.time()
+            if now - last_pdf_dedup_upload_time > 2.0:
+                # 1. 刪除 client_dedup_temp 底下的舊檔案
+                for f in input_dir.iterdir():
+                    if f.is_file() and f.name != ".gitkeep":
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
+                # 2. 清空下拉選單
+                if client_pdf_dedup_select:
+                    client_pdf_dedup_select.options = ["[全部已上傳PDF文件]"]
+                    client_pdf_dedup_select.value = "[全部已上傳PDF文件]"
+                    client_pdf_dedup_select.update()
+                # 3. 清空查重結果表格與下載容器等記錄
+                if pdf_dedup_download_container:
+                    pdf_dedup_download_container.clear()
+                    pdf_dedup_download_container.visible = False
+                if pdf_dedup_progress:
+                    pdf_dedup_progress.set_value(0.0)
+                    pdf_dedup_progress.visible = False
+                if pdf_dedup_status:
+                    pdf_dedup_status.set_text("")
+                    pdf_dedup_status.visible = False
+                if pdf_dedup_table:
+                    pdf_dedup_table.rows = []
+                    pdf_dedup_table.update()
+                if pdf_dedup_results_container:
+                    pdf_dedup_results_container.visible = False
+            last_pdf_dedup_upload_time = now
+
+            file_path = input_dir / e.file.name
             data = await e.file.read()
             file_path.write_bytes(data)
             ui.notify(f"PDF 文件 {e.file.name} 上傳成功！已暫存至後端。", type="positive", position="top")
@@ -723,8 +793,42 @@ def main_page() -> None:
     async def on_pdf_upload(e: events.UploadEventArguments) -> None:
         """处理用户上传 PDF 账单"""
         try:
+            import time
+            nonlocal last_pdf_upload_time
             input_dir = INPUT_PDF_DIR / "client_pdf_temp"
             input_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 若為新上傳階段（與上次上傳間隔 > 2 秒），則清空原來的上傳文件及記錄
+            now = time.time()
+            if now - last_pdf_upload_time > 2.0:
+                # 1. 刪除 client_pdf_temp 底下的舊檔案
+                for f in input_dir.iterdir():
+                    if f.is_file() and f.name != ".gitkeep":
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
+                # 2. 清空下拉選單
+                if client_pdf_select:
+                    client_pdf_select.options = ["[全部已上传PDF文件]"]
+                    client_pdf_select.value = "[全部已上传PDF文件]"
+                    client_pdf_select.update()
+                # 3. 清空日誌與下載容器等記錄
+                if pdf_download_container:
+                    pdf_download_container.clear()
+                    pdf_download_container.visible = False
+                if pdf_progress:
+                    pdf_progress.set_value(0.0)
+                    pdf_progress.visible = False
+                if pdf_status:
+                    pdf_status.set_text("")
+                    pdf_status.visible = False
+                if pdf_log_container:
+                    pdf_log_container.clear()
+                if pdf_log_board:
+                    pdf_log_board.visible = False
+            last_pdf_upload_time = now
+
             file_path = input_dir / e.file.name
             
             # NiceGUI 3.x FileUpload.read() 是一个异步方法
