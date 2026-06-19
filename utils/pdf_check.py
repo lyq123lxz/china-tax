@@ -13,13 +13,15 @@ class PDFDeduplicator:
     負責處理 PDF 檔案的讀取、解密、雜湊計算、去密落盤及重複件篩選。
     """
 
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(self, output_dir: Path, decrypt_dir: Path) -> None:
         """初始化 PDF 查重引擎。
 
         Args:
             output_dir: 存放唯一且去密後的 PDF 檔案的輸出目錄。
+            decrypt_dir: 存放所有成功解密後的 PDF 檔案的輸出目錄。
         """
         self.output_dir: Path = output_dir
+        self.decrypt_dir: Path = decrypt_dir
 
     def _process_single_file(
         self,
@@ -128,27 +130,42 @@ class PDFDeduplicator:
                         sha256_hash.update(chunk)
                 sha256_val = sha256_hash.hexdigest()
             
+            # 先儲存到解密目錄 (decrypt_dir)
+            self.decrypt_dir.mkdir(parents=True, exist_ok=True)
+            decrypt_dest = self.decrypt_dir / file_name
+            
+            if reader.is_encrypted and mem_file is not None:
+                # 將去密後的記憶體流寫入解密目錄
+                with open(decrypt_dest, "wb") as out_f:
+                    out_f.write(mem_file.getvalue())
+            else:
+                # 未加密檔案，直接複製原檔案至解密目錄
+                shutil.copy2(file_path, decrypt_dest)
+                
             # 雜湊值判定與查重
             if sha256_val in seen_hashes:
                 status = "Duplicate"
-                action = "Skipped (已跳過)"
+                if reader.is_encrypted:
+                    action = "Decrypted & Skipped (已解密重複件)"
+                else:
+                    action = "Skipped (重複已跳過)"
                 duplicate_of = seen_hashes[sha256_val]
             else:
                 seen_hashes[sha256_val] = file_name
                 status = "Unique"
                 
-                # 建立輸出目錄
+                # 儲存到去重目錄 (output_dir)
                 self.output_dir.mkdir(parents=True, exist_ok=True)
-                dest_path = self.output_dir / file_name
+                dedup_dest = self.output_dir / file_name
                 
                 if reader.is_encrypted and mem_file is not None:
-                    # 將去密後的記憶體流寫入硬碟
-                    with open(dest_path, "wb") as out_f:
+                    # 將去密後的記憶體流寫入去重目錄
+                    with open(dedup_dest, "wb") as out_f:
                         out_f.write(mem_file.getvalue())
                     action = "Kept (已保留並去密)"
                 else:
-                    # 未加密檔案，直接複製原檔案
-                    shutil.copy2(file_path, dest_path)
+                    # 未加密檔案，直接複製原檔案至去重目錄
+                    shutil.copy2(file_path, dedup_dest)
                     action = "Kept (已保留)"
                     
         except Exception:

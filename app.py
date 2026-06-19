@@ -657,16 +657,19 @@ def main_page() -> None:
 
         try:
             if mode == "server":
-                out_path_str = pdf_dedup_out_dir_input.value if pdf_dedup_out_dir_input and pdf_dedup_out_dir_input.value else str(OUTPUT_PDF_DECRYPT_DIR)
-                out_dir = Path(out_path_str)
+                out_dir = OUTPUT_PDF_DIR
+                decrypt_path_str = pdf_dedup_out_dir_input.value if pdf_dedup_out_dir_input and pdf_dedup_out_dir_input.value else str(OUTPUT_PDF_DECRYPT_DIR)
+                decrypt_dir = Path(decrypt_path_str)
                 report_out_dir = OUTPUT_MD_DIR
             else:
-                out_dir = OUTPUT_PDF_DECRYPT_DIR / "client_dedup_out"
+                out_dir = OUTPUT_PDF_DIR / "client_dedup_out"
+                decrypt_dir = OUTPUT_PDF_DECRYPT_DIR / "client_dedup_out"
                 report_out_dir = OUTPUT_MD_DIR / "client_dedup_out"
             
             out_dir.mkdir(parents=True, exist_ok=True)
+            decrypt_dir.mkdir(parents=True, exist_ok=True)
             report_out_dir.mkdir(parents=True, exist_ok=True)
-            dedup = PDFDeduplicator(output_dir=out_dir)
+            dedup = PDFDeduplicator(output_dir=out_dir, decrypt_dir=decrypt_dir)
             
             if mode == "server":
                 selected = pdf_dedup_file_select.value
@@ -739,7 +742,7 @@ def main_page() -> None:
 
             # 如果有保留唯一件，則打包為單一 ZIP
             if kept_files:
-                zip_file_path = (OUTPUT_PDF_DECRYPT_DIR if mode == "server" else OUTPUT_PDF_DECRYPT_DIR / "client_dedup_out") / "deduplicated_files.zip"
+                zip_file_path = (OUTPUT_PDF_DIR if mode == "server" else OUTPUT_PDF_DIR / "client_dedup_out") / "deduplicated_files.zip"
                 if zip_file_path.exists():
                     zip_file_path.unlink()
                 
