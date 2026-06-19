@@ -197,22 +197,24 @@ def clear_data_directories(preserve_files: list[Path] = None, clear_archives: bo
         except Exception:
             pass
 
-    for parent_dir in (INPUT_DIR, OUTPUT_DIR):
-        if parent_dir.exists():
-            for item in parent_dir.iterdir():
-                if item.name == ".gitkeep":
-                    continue
-                if item.name == "archives" and not clear_archives:
-                    continue
+    data_root = BASE_DIR / "data"
+    if data_root.exists():
+        for item in data_root.iterdir():
+            if item.is_dir():
                 try:
-                    if item.is_file():
-                        if item.resolve() in preserve_paths:
-                            continue
-                        item.unlink()
-                    elif item.is_dir():
-                        _clean_subdir(item)
+                    if item.name == "archives" and not clear_archives:
+                        continue
+                    _clean_subdir(item)
+                    # 清理後如果目錄為空且不是預設的 input/output 目錄，則將其刪除
+                    if not any(item.iterdir()) and item.name not in ("input", "output"):
+                        item.rmdir()
                 except Exception as e:
                     print(f"清理 {item} 失败: {e}")
+
+    # 確保預設的輸入輸出目錄存在
+    (data_root / "input").mkdir(parents=True, exist_ok=True)
+    (data_root / "output").mkdir(parents=True, exist_ok=True)
+
 
 import config.db_config as db_config
 import config.tax_rates as tax_rates
@@ -1088,8 +1090,8 @@ def main_page() -> None:
                     
                     def manual_clear():
                         clear_data_directories(clear_archives=False)
-                        ui.notify("已成功清理后端输入输出目录中的所有临时和生成文件！", type="positive", position="top")
-                        log_action("手动执行后端输入输出目录文件清理。")
+                        ui.notify("已成功清理后端 data 目錄下的所有子目錄與暫存檔案！", type="positive", position="top")
+                        log_action("手动执行后端 data 目录所有子目录文件清理。")
                         
                     ui.button("🧹 一键清空后端文件", on_click=manual_clear).classes(
                         "w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold py-2 px-3 rounded-lg shadow-sm"
