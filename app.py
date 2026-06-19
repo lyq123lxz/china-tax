@@ -166,6 +166,68 @@ def generate_audit_report(results: list[dict[str, Any]], output_dir: Path) -> Pa
         f.write("\n".join(lines))
     return report_path
 
+def generate_pdf_conversion_report(all_alerts: list[dict[str, Any]], output_dir: Path) -> Path:
+    """生成 PDF 轉 Markdown 解析與對賬勾稽審計報告。"""
+    report_path = output_dir / "report.md"
+    
+    total_alerts = len(all_alerts)
+    errors = sum(1 for a in all_alerts if a.get("status") == "error")
+    warnings = sum(1 for a in all_alerts if a.get("status") == "warning")
+    reviews = sum(1 for a in all_alerts if a.get("status") == "NEED_VISUAL_REVIEW")
+    successes = sum(1 for a in all_alerts if a.get("status") == "success")
+    
+    lines = [
+        "# PDF 轉 Markdown 解析與對賬勾稽審計報告",
+        f"\n**產生時間**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "\n## 1. 執行摘要",
+        f"- **總審計警示數**: {total_alerts} 處",
+        f"- **勾稽成功件數**: {successes} 處",
+        f"- **人工視覺覆核 (NEED_VISUAL_REVIEW)**: {reviews} 處",
+        f"- **對賬警告件數**: {warnings} 處",
+        f"- **解析錯誤件數**: {errors} 處",
+        "\n## 2. 審計警示明細清單",
+        "| 檔案名稱 | 頁碼 | 警示類型 | 警示狀態 | 警示訊息 |",
+        "| :--- | :--- | :--- | :--- | :--- |"
+    ]
+    for a in all_alerts:
+        lines.append(
+            f"| {a.get('file', 'Unknown')} | {a.get('page', 0)} | {a.get('type', 'None')} | {a.get('status', 'info')} | {a.get('message', '').replace('|', 'I')} |"
+        )
+        
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return report_path
+
+def generate_csv_excel_report(all_logs: list[dict[str, Any]], output_dir: Path) -> Path:
+    """生成 CSV/Excel 互转审计与转换报告。"""
+    report_path = output_dir / "report.md"
+    
+    total = len(all_logs)
+    successes = sum(1 for a in all_logs if a.get("status") == "success")
+    errors = sum(1 for a in all_logs if a.get("status") == "failed")
+    
+    lines = [
+        "# CSV 与 Excel 转换对账审计报告",
+        f"\n**产生时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "\n## 1. 运行摘要",
+        f"- **总处理文件数**: {total} 个",
+        f"- **转换成功数**: {successes} 个",
+        f"- **转换失败数**: {errors} 个",
+        "\n## 2. 转换明细清单",
+        "| 序号 | 原始文件名 | 转换状态 | 提示信息 |",
+        "| :--- | :--- | :--- | :--- |"
+    ]
+    for idx, a in enumerate(all_logs, start=1):
+        lines.append(
+            f"| {idx} | {a.get('file', 'Unknown')} | {a.get('status', 'info')} | {a.get('message', '').replace('|', 'I')} |"
+        )
+        
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return report_path
+
 def create_zip_archive(files: list[Path], output_zip_path: Path) -> None:
     """將保存 Jun 唯一件 PDF 檔案打包成一個 ZIP 壓縮檔。"""
     with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -409,9 +471,22 @@ def main_page() -> None:
                 else:
                     dialog_status.set_text(message)
             ui.notify(message, type="positive" if success else "negative", position="top")
+            if file_name:
+                conversion_logs.append({
+                    "file": file_name,
+                    "status": "success" if success else "failed",
+                    "message": message
+                })
 
         output_files: list[Path] = []
+        conversion_logs = []
         try:
+            if mode == "server":
+                out_zip_dir = OUTPUT_EXCEL_DIR
+            else:
+                out_zip_dir = OUTPUT_EXCEL_DIR / "client_temp"
+            out_zip_dir.mkdir(parents=True, exist_ok=True)
+
             if mode == "server":
                 selected = file_select.value
                 path_str = local_dir_input.value if local_dir_input and local_dir_input.value else str(INPUT_CSV_DIR)
@@ -423,33 +498,17 @@ def main_page() -> None:
                     for out_path in converted_paths:
                         if out_path.exists():
                             output_files.append(out_path)
-                            try:
-                                relative_path = out_path.relative_to(BASE_DIR)
-                                download_url = f"/download/{relative_path.as_posix()}"
-                                with csv_download_container:
-                                    ui.link(f"📥 下载 {out_path.name}", download_url, new_tab=True).classes(
-                                        "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                                    )
-                                csv_download_container.visible = True
-                            except ValueError:
-                                pass
                 else:
                     file_path = input_dir / selected
                     if file_path.exists():
-                        out_path = await converter.convert_file(file_path, mode="csv_to_excel")
-                        on_progress(1, 1, selected, True, f"本机转换成功: {selected}")
-                        if out_path.exists():
-                            output_files.append(out_path)
-                            try:
-                                relative_path = out_path.relative_to(BASE_DIR)
-                                download_url = f"/download/{relative_path.as_posix()}"
-                                with csv_download_container:
-                                    ui.link(f"📥 下载 {out_path.name}", download_url, new_tab=True).classes(
-                                        "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                                    )
-                                csv_download_container.visible = True
-                            except ValueError:
-                                pass
+                        try:
+                            out_path = await converter.convert_file(file_path, mode="csv_to_excel")
+                            on_progress(1, 1, selected, True, f"本机转换成功: {selected}")
+                            if out_path.exists():
+                                output_files.append(out_path)
+                        except Exception as e:
+                            on_progress(1, 1, selected, False, f"本机转换失败: {str(e)}")
+                            raise e
                     else:
                         raise FileNotFoundError(f"文件不存在: {selected}")
             else:
@@ -464,43 +523,42 @@ def main_page() -> None:
                         on_progress(0, 0, "", True, "未找到任何已上传的文件。")
                         return
                     for idx, file_path in enumerate(files, start=1):
-                        out_path = await converter.convert_file(file_path, mode="csv_to_excel")
-                        on_progress(idx, total_files, file_path.name, True, f"转换成功: {file_path.name}")
-                        if out_path.exists():
-                            output_files.append(out_path)
-                        
-                        relative_path = out_path.relative_to(BASE_DIR)
-                        download_url = f"/download/{relative_path.as_posix()}"
-                        with csv_download_container:
-                            ui.link(f"📥 下载 {out_path.name}", download_url, new_tab=True).classes(
-                                "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                            )
-                        csv_download_container.visible = True
+                        try:
+                            out_path = await converter.convert_file(file_path, mode="csv_to_excel")
+                            on_progress(idx, total_files, file_path.name, True, f"转换成功: {file_path.name}")
+                            if out_path.exists():
+                                output_files.append(out_path)
+                        except Exception as e:
+                            on_progress(idx, total_files, file_path.name, False, f"转换失败: {str(e)}")
                 else:
                     file_path = input_dir / selected
                     if file_path.exists():
-                        out_path = await converter.convert_file(file_path, mode="csv_to_excel")
-                        on_progress(1, 1, selected, True, f"转换成功: {selected}")
-                        if out_path.exists():
-                            output_files.append(out_path)
-                        
-                        relative_path = out_path.relative_to(BASE_DIR)
-                        download_url = f"/download/{relative_path.as_posix()}"
-                        with csv_download_container:
-                            ui.link(f"📥 点击下载 {out_path.name}", download_url, new_tab=True).classes(
-                                "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                            )
-                        csv_download_container.visible = True
+                        try:
+                            out_path = await converter.convert_file(file_path, mode="csv_to_excel")
+                            on_progress(1, 1, selected, True, f"转换成功: {selected}")
+                            if out_path.exists():
+                                output_files.append(out_path)
+                        except Exception as e:
+                            on_progress(1, 1, selected, False, f"转换失败: {str(e)}")
+                            raise e
                     else:
                         raise FileNotFoundError(f"文件不存在: {selected}")
             
+            # 生成 report.md 并提供下载
+            if conversion_logs:
+                report_file = generate_csv_excel_report(conversion_logs, out_zip_dir)
+                try:
+                    rel_report = report_file.relative_to(BASE_DIR)
+                    report_url = f"/download/{rel_report.as_posix()}"
+                    with csv_download_container:
+                        ui.link("📊 下载转换报告 (report.md)", report_url, new_tab=True).classes(
+                            "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
+                        )
+                except ValueError:
+                    pass
+
             # 如果有转换成果文件，則打包為單一 ZIP
             if output_files:
-                if mode == "server":
-                    out_zip_dir = OUTPUT_EXCEL_DIR
-                else:
-                    out_zip_dir = OUTPUT_EXCEL_DIR / "client_temp"
-                out_zip_dir.mkdir(parents=True, exist_ok=True)
                 zip_file_path = out_zip_dir / "converted_files.zip"
                 if zip_file_path.exists():
                     zip_file_path.unlink()
@@ -517,6 +575,8 @@ def main_page() -> None:
                             )
                     except ValueError:
                         pass
+            
+            if conversion_logs or output_files:
                 csv_download_container.visible = True
 
             dialog_status.set_text("转换任务已完成！")
@@ -723,22 +783,13 @@ def main_page() -> None:
             except ValueError:
                 pass
 
-            # 收集去密唯一件並提供下載連結
+            # 收集去密唯一件
             kept_files = []
             for r in results:
                 if r["status"] == "Unique" and r["action"] in ("Kept (已保留)", "Kept (已保留並去密)"):
                     saved_file = out_dir / r["file_name"]
                     if saved_file.exists():
                         kept_files.append(saved_file)
-                        try:
-                            rel_saved = saved_file.relative_to(BASE_DIR)
-                            saved_url = f"/download/{rel_saved.as_posix()}"
-                            with pdf_dedup_download_container:
-                                ui.link(f"📥 {r['file_name']}", saved_url, new_tab=True).classes(
-                                    "bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                                )
-                        except ValueError:
-                            pass
 
             # 如果有保留唯一件，則打包為單一 ZIP
             if kept_files:
@@ -894,6 +945,8 @@ def main_page() -> None:
         pdf_download_container.clear()
         pdf_download_container.visible = False
         
+        all_audit_logs = []
+
         def on_progress(progress: ParserProgress) -> None:
             if pdf_progress and pdf_status:
                 file_idx = progress.current_file_idx
@@ -903,6 +956,9 @@ def main_page() -> None:
                 message = progress.status_msg
                 audit_logs = progress.audit_alerts
                 
+                if audit_logs:
+                    all_audit_logs.extend(audit_logs)
+                
                 if total_files > 0 and total_pages > 0:
                     current_progress = (file_idx - 1) / total_files + (page_num / total_pages) / total_files
                     pdf_progress.set_value(current_progress)
@@ -911,7 +967,7 @@ def main_page() -> None:
                     pdf_status.set_text(message)
                     
             # 看板渲染审计日志行
-            for log in audit_logs:
+            for log in progress.audit_alerts:
                 if log["status"] == "success":
                     bg_color, text_color, icon = "bg-emerald-950/40 border-emerald-500/30", "text-emerald-400", "✅"
                     animate_class = ""
@@ -951,14 +1007,6 @@ def main_page() -> None:
                         out_path_obj = Path(out_path).resolve()
                         if out_path_obj.exists():
                             output_md_files.append(out_path_obj)
-                        relative_path = out_path_obj.relative_to(BASE_DIR)
-                        download_url = f"/download/{relative_path.as_posix()}"
-                        with pdf_download_container:
-                            ui.link(f"📥 下载 {out_path_obj.name}", download_url, new_tab=True).classes(
-                                "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                            )
-                    if output_files:
-                        pdf_download_container.visible = True
                 else:
                     file_path = input_dir / selected
                     if file_path.exists():
@@ -966,14 +1014,7 @@ def main_page() -> None:
                         out_path_obj = Path(out_path).resolve()
                         if out_path_obj.exists():
                             output_md_files.append(out_path_obj)
-                        relative_path = out_path_obj.relative_to(BASE_DIR)
-                        download_url = f"/download/{relative_path.as_posix()}"
-                        ui.notify(f"转换成功！生成至同目录下的 {out_path_obj.name}", type="positive", position="top")
-                        with pdf_download_container:
-                            ui.link(f"📥 下载 {out_path_obj.name}", download_url, new_tab=True).classes(
-                                "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                            )
-                        pdf_download_container.visible = True
+                        ui.notify(f"解析成功！已生成至 {out_path_obj.name}", type="positive", position="top")
                     else:
                         raise FileNotFoundError(f"文件不存在: {selected}")
             else:
@@ -992,13 +1033,6 @@ def main_page() -> None:
                         out_path_obj = Path(out_path).resolve()
                         if out_path_obj.exists():
                             output_md_files.append(out_path_obj)
-                        relative_path = out_path_obj.relative_to(BASE_DIR)
-                        download_url = f"/download/{relative_path.as_posix()}"
-                        with pdf_download_container:
-                            ui.link(f"📥 下载 {out_path_obj.name}", download_url, new_tab=True).classes(
-                                "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                            )
-                        pdf_download_container.visible = True
                 else:
                     file_path = input_dir / selected
                     if file_path.exists():
@@ -1006,17 +1040,28 @@ def main_page() -> None:
                         out_path_obj = Path(out_path).resolve()
                         if out_path_obj.exists():
                             output_md_files.append(out_path_obj)
-                        relative_path = out_path_obj.relative_to(BASE_DIR)
-                        download_url = f"/download/{relative_path.as_posix()}"
-                        ui.notify(f"解析成功！请在下方选择下载 {out_path_obj.name}", type="positive", position="top")
-                        with pdf_download_container:
-                            ui.link(f"📥 点击下载 {out_path_obj.name}", download_url, new_tab=True).classes(
-                                "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                            )
-                        pdf_download_container.visible = True
+                        ui.notify(f"解析成功！已暫存至後端。", type="positive", position="top")
                     else:
                         raise FileNotFoundError(f"文件不存在: {selected}")
             
+            # 定義報告輸出目錄
+            if mode == "server":
+                report_out_dir = OUTPUT_MD_DIR
+            else:
+                report_out_dir = OUTPUT_MD_DIR / "client_pdf_out"
+            
+            # 生成 report.md 審計報告并提供下載
+            report_file = generate_pdf_conversion_report(all_audit_logs, report_out_dir)
+            try:
+                rel_report = report_file.relative_to(BASE_DIR)
+                report_url = f"/download/{rel_report.as_posix()}"
+                with pdf_download_container:
+                    ui.link("📊 下載審計報告 (report.md)", report_url, new_tab=True).classes(
+                        "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
+                    )
+            except ValueError:
+                pass
+
             # 如果有生成的 Markdown 文件，則打包為單一 ZIP
             if output_md_files:
                 if mode == "server":
