@@ -3,6 +3,10 @@ import signal
 import subprocess
 import time
 import zipfile
+import warnings
+
+# 忽略 openpyxl 样式相关的 UserWarning，防止缺少默认样式引起日志输出或在严格警告模式下报错
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 def free_port(port: int = 28888) -> None:
     """If the port is occupied, find the process holding it, its parent, and kill them to release the port."""
@@ -55,6 +59,9 @@ from utils.csv_excel import BatchConverter
 from utils.pdf_md import PDFBatchParser, ParserProgress
 from utils.pdf_check import PDFDeduplicator
 import utils.md_closing as md_closing
+import utils.md_csv as md_csv
+import utils.csv_closing as csv_closing
+from utils.excel_csv import ExcelToCsvConverter
 
 # ---------------------------------------------------------
 # 全局引用与状态管理，用于更新 UI 状态
@@ -219,7 +226,38 @@ def generate_pdf_conversion_report(all_alerts: list[dict[str, Any]], output_dir:
         f.write("\n".join(lines))
     return report_path
 
-def generate_csv_excel_report(all_logs: list[dict[str, Any]], output_dir: Path) -> Path:
+def generate_md_csv_conversion_report(all_alerts: list[dict[str, Any]], output_dir: Path) -> Path:
+    """生成 Markdown 转 CSV 转换审计报告。"""
+    report_path = output_dir / "report.md"
+    
+    total_alerts = len(all_alerts)
+    errors = sum(1 for a in all_alerts if a.get("status") == "error")
+    warnings = sum(1 for a in all_alerts if a.get("status") == "warning")
+    successes = sum(1 for a in all_alerts if a.get("status") == "success")
+    
+    lines = [
+        "# Markdown 轉 CSV 數據矩陣轉換報告",
+        f"\n**產生時間**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "\n## 1. 執行摘要",
+        f"- **總轉換警示數**: {total_alerts} 處",
+        f"- **成功轉換件數**: {successes} 處",
+        f"- **轉換警告件數**: {warnings} 處",
+        f"- **轉換錯誤件數**: {errors} 处",
+        "\n## 2. 全量轉換狀態明細清單",
+        "| 檔案名稱 | 轉換類型 | 轉換狀態 | 轉換訊息 |",
+        "| :--- | :--- | :--- | :--- |"
+    ]
+    for a in all_alerts:
+        lines.append(
+            f"| {a.get('file', 'Unknown')} | {a.get('type', 'None')} | {a.get('status', 'info')} | {a.get('message', '').replace('|', 'I')} |"
+        )
+        
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return report_path
+
+def generate_csv_excel_report(all_logs: list[dict[str, Any]], output_dir: Path, direction: str = "未知方向") -> Path:
     """生成 CSV/Excel 互转审计与转换报告。"""
     report_path = output_dir / "report.md"
     
@@ -229,7 +267,8 @@ def generate_csv_excel_report(all_logs: list[dict[str, Any]], output_dir: Path) 
     
     lines = [
         "# CSV 与 Excel 转换对账审计报告",
-        f"\n**产生时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"\n- **转换方向**: {direction}",
+        f"- **报告产生时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         "\n## 1. 运行摘要",
         f"- **总处理文件数**: {total} 个",
         f"- **转换成功数**: {successes} 个",
@@ -328,7 +367,7 @@ def main_page() -> None:
     last_pdf_dedup_upload_time = 0.0
     last_pdf_upload_time = 0.0
 
-    auto_clear_switch: ui.switch = None
+
     bank_name_input: ui.input = None
     csv_excel_dialog: ui.dialog = None
     file_select: ui.select = None
@@ -338,6 +377,19 @@ def main_page() -> None:
     local_dir_input: ui.input = None
     source_type: ui.toggle = None
     csv_download_container: ui.row = None
+    csv_report_preview: ui.markdown = None
+
+    # --- 模块 1 扩展：Excel → CSV 对话框状态 ---
+    excel_csv_dialog: ui.dialog = None
+    excel_file_select: ui.select = None
+    client_excel_file_select: ui.select = None
+    excel_dialog_progress: ui.linear_progress = None
+    excel_dialog_status: ui.label = None
+    excel_local_dir_input: ui.input = None
+    excel_source_type: ui.toggle = None
+    excel_download_container: ui.row = None
+    excel_report_preview: ui.markdown = None
+    last_excel_upload_time = 0.0
 
     pdf_md_dialog: ui.dialog = None
     pdf_file_select: ui.select = None
@@ -378,6 +430,14 @@ def main_page() -> None:
     md_closing_start_date: ui.input = None
     md_closing_end_date: ui.input = None
     md_closing_uploaded_files: list[tuple[str, bytes]] = []
+
+    csv_closing_dialog: ui.dialog = None
+    csv_closing_progress: ui.linear_progress = None
+    csv_closing_status: ui.label = None
+    csv_closing_download_container: ui.row = None
+    csv_closing_start_date: ui.input = None
+    csv_closing_end_date: ui.input = None
+    csv_closing_uploaded_files: list[tuple[str, bytes]] = []
 
 
     # =========================================================
@@ -428,6 +488,9 @@ def main_page() -> None:
                 if csv_download_container:
                     csv_download_container.clear()
                     csv_download_container.visible = False
+                if csv_report_preview:
+                    csv_report_preview.visible = False
+                    csv_report_preview.set_content("")
                 if dialog_progress:
                     dialog_progress.set_value(0.0)
                     dialog_progress.visible = False
@@ -436,10 +499,10 @@ def main_page() -> None:
                     dialog_status.visible = False
             last_csv_upload_time = now
 
-            file_path = input_dir / e.file.name
+            file_path = input_dir / Path(e.file.name).name
             data = await e.file.read()
             file_path.write_bytes(data)
-            ui.notify(f"文件 {e.file.name} 上传成功！已暂存至后端。", type="positive", position="top")
+            ui.notify(f"文件 {Path(e.file.name).name} 上传成功！已暂存至后端。", type="positive", position="top")
             
             files = [f.name for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() == ".csv"]
             client_file_select.options = ["[全部已上传文件]"] + files
@@ -478,9 +541,6 @@ def main_page() -> None:
             elif selected:
                 preserve_files = [input_dir / selected]
 
-        if auto_clear_switch and auto_clear_switch.value:
-            clear_data_directories(preserve_files=preserve_files, clear_archives=False)
-            log_action("模块 1 执行前已自动清空历史临时文件。")
 
         dialog_progress.set_value(0.0)
         dialog_progress.visible = True
@@ -490,14 +550,19 @@ def main_page() -> None:
         csv_download_container.clear()
         csv_download_container.visible = False
         
+        if csv_report_preview:
+            csv_report_preview.visible = False
+            csv_report_preview.set_content("")
+        
         def on_progress(current: int, total: int, file_name: str, success: bool, message: str) -> None:
             if dialog_progress and dialog_status:
-                if total > 0:
-                    dialog_progress.set_value(current / total)
-                    dialog_status.set_text(f"进度 ({current}/{total}): {file_name}")
-                else:
-                    dialog_status.set_text(message)
-            ui.notify(message, type="positive" if success else "negative", position="top")
+                with dialog_status:
+                    if total > 0:
+                        dialog_progress.set_value(current / total)
+                        dialog_status.set_text(f"进度 ({current}/{total}): {file_name}")
+                    else:
+                        dialog_status.set_text(message)
+                    ui.notify(message, type="positive" if success else "negative", position="top")
             if file_name:
                 conversion_logs.append({
                     "file": file_name,
@@ -571,9 +636,9 @@ def main_page() -> None:
                     else:
                         raise FileNotFoundError(f"文件不存在: {selected}")
             
-            # 生成 report.md 并提供下载
+            report_file = None
             if conversion_logs:
-                report_file = generate_csv_excel_report(conversion_logs, out_zip_dir)
+                report_file = generate_csv_excel_report(conversion_logs, out_zip_dir, direction="CSV ➔ Excel (无损数值转换)")
                 try:
                     rel_report = report_file.relative_to(BASE_DIR)
                     report_url = f"/download/{rel_report.as_posix()}"
@@ -583,6 +648,15 @@ def main_page() -> None:
                         )
                 except ValueError:
                     pass
+                
+                # 新增：报告预览展示
+                if report_file and report_file.exists() and csv_report_preview:
+                    try:
+                        report_text = report_file.read_text(encoding="utf-8")
+                        csv_report_preview.set_content(report_text)
+                        csv_report_preview.visible = True
+                    except Exception:
+                        pass
 
             # 如果有转换成果文件，則打包為單一 ZIP
             if output_files:
@@ -590,7 +664,12 @@ def main_page() -> None:
                 if zip_file_path.exists():
                     zip_file_path.unlink()
                 
-                await asyncio.to_thread(create_zip_archive, output_files, zip_file_path)
+                # 新增：将报告文件也一同打包进 ZIP 中
+                files_to_zip = list(output_files)
+                if report_file and report_file.exists():
+                    files_to_zip.append(report_file)
+                    
+                await asyncio.to_thread(create_zip_archive, files_to_zip, zip_file_path)
                 
                 if zip_file_path.exists():
                     try:
@@ -614,6 +693,273 @@ def main_page() -> None:
             await asyncio.sleep(3)
             dialog_progress.visible = False
             dialog_status.visible = False
+
+    # =========================================================
+    # 模块 1 扩展: Excel → CSV 转换回调函数
+    # =========================================================
+
+    def handle_excel_csv(e: events.ClickEventArguments) -> None:
+        """打开 Excel → CSV 转换对话框，重置进度状态。"""
+        refresh_excel_file_list()
+        excel_csv_dialog.open()
+
+    def refresh_excel_file_list() -> None:
+        """刷新本机 Excel 文件下拉列表。"""
+        if excel_file_select:
+            path_str = (
+                excel_local_dir_input.value
+                if excel_local_dir_input and excel_local_dir_input.value
+                else str(INPUT_EXCEL_DIR)
+            )
+            input_dir = Path(path_str)
+            try:
+                if input_dir.exists() and input_dir.is_dir():
+                    files = [
+                        f.name
+                        for f in input_dir.iterdir()
+                        if f.is_file() and f.suffix.lower() in {".xlsx", ".xls", ".xlsm", ".xlsb"}
+                    ]
+                    excel_file_select.options = ["[全部Excel文件]"] + files
+                else:
+                    excel_file_select.options = ["[全部Excel文件]"]
+            except Exception:
+                excel_file_select.options = ["[全部Excel文件]"]
+            excel_file_select.update()
+
+    async def on_excel_upload(e: events.UploadEventArguments) -> None:
+        """处理客户端 Excel 文件上传，保存至后端临时目录。"""
+        try:
+            import time
+            nonlocal last_excel_upload_time
+            input_dir = INPUT_EXCEL_DIR / "client_temp"
+            input_dir.mkdir(parents=True, exist_ok=True)
+
+            now = time.time()
+            if now - last_excel_upload_time > 2.0:
+                for f in input_dir.iterdir():
+                    if f.is_file() and f.name != ".gitkeep":
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
+                if client_excel_file_select:
+                    client_excel_file_select.options = ["[全部已上传Excel文件]"]
+                    client_excel_file_select.value = "[全部已上传Excel文件]"
+                    client_excel_file_select.update()
+                if excel_download_container:
+                    excel_download_container.clear()
+                    excel_download_container.visible = False
+                if excel_dialog_progress:
+                    excel_dialog_progress.set_value(0.0)
+                    excel_dialog_progress.visible = False
+                if excel_dialog_status:
+                    excel_dialog_status.set_text("")
+                    excel_dialog_status.visible = False
+            last_excel_upload_time = now
+
+            file_path = input_dir / Path(e.file.name).name
+            data = await e.file.read()
+            file_path.write_bytes(data)
+            ui.notify(f"Excel 文件 {Path(e.file.name).name} 上传成功！", type="positive", position="top")
+
+            files = [
+                f.name
+                for f in input_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in {".xlsx", ".xls", ".xlsm", ".xlsb"}
+            ]
+            client_excel_file_select.options = ["[全部已上传Excel文件]"] + files
+            client_excel_file_select.value = "[全部已上传Excel文件]"
+            client_excel_file_select.update()
+        except Exception as err:
+            ui.notify(f"文件保存失败: {str(err)}", type="negative", position="top")
+
+    async def run_excel_to_csv_conversion() -> None:
+        """执行 Excel → CSV 批量转换（含多 Sheet 拆分）。"""
+        if not excel_file_select or not excel_dialog_progress or not excel_dialog_status:
+            return
+
+        mode = excel_source_type.value
+
+        excel_dialog_progress.set_value(0.0)
+        excel_dialog_progress.visible = True
+        excel_dialog_status.visible = True
+        excel_dialog_status.set_text("正在启动 Excel → CSV 转换...")
+
+        excel_download_container.clear()
+        excel_download_container.visible = False
+        
+        if excel_report_preview:
+            excel_report_preview.visible = False
+            excel_report_preview.set_content("")
+
+        excel_conversion_logs: list[dict] = []
+        output_csv_files: list[Path] = []
+
+        def on_excel_progress(
+            current: int, total: int, file_name: str, success: bool, message: str
+        ) -> None:
+            if excel_dialog_progress and excel_dialog_status:
+                with excel_dialog_status:
+                    if total > 0:
+                        excel_dialog_progress.set_value(current / total)
+                        excel_dialog_status.set_text(f"进度 ({current}/{total}): {file_name}")
+                    else:
+                        excel_dialog_status.set_text(message)
+                    ui.notify(message, type="positive" if success else "negative", position="top")
+            if file_name:
+                excel_conversion_logs.append({
+                    "file": file_name,
+                    "status": "success" if success else "failed",
+                    "message": message,
+                })
+
+        try:
+            if mode == "server":
+                out_zip_dir = OUTPUT_CSV_DIR
+                path_str = (
+                    excel_local_dir_input.value
+                    if excel_local_dir_input and excel_local_dir_input.value
+                    else str(INPUT_EXCEL_DIR)
+                )
+                input_dir = Path(path_str)
+                selected = excel_file_select.value
+
+                converter = ExcelToCsvConverter(input_dir=input_dir, output_dir=out_zip_dir)
+
+                if selected == "[全部Excel文件]":
+                    files = [
+                        f for f in input_dir.iterdir()
+                        if f.is_file() and f.suffix.lower() in {".xlsx", ".xls", ".xlsm", ".xlsb"}
+                    ]
+                    total = len(files)
+                    for idx, fp in enumerate(files, start=1):
+                        paths = await converter.convert_file(
+                            excel_path=fp,
+                            out_dir=out_zip_dir,
+                            progress_callback=on_excel_progress,
+                            file_idx=idx,
+                            total_files=total,
+                        )
+                        output_csv_files.extend(paths)
+                else:
+                    fp = input_dir / selected
+                    if not fp.exists():
+                        raise FileNotFoundError(f"文件不存在: {selected}")
+                    paths = await converter.convert_file(
+                        excel_path=fp,
+                        out_dir=out_zip_dir,
+                        progress_callback=on_excel_progress,
+                        file_idx=1,
+                        total_files=1,
+                    )
+                    output_csv_files.extend(paths)
+            else:
+                out_zip_dir = OUTPUT_CSV_DIR / "client_temp"
+                input_dir = INPUT_EXCEL_DIR / "client_temp"
+                out_zip_dir.mkdir(parents=True, exist_ok=True)
+                selected = client_excel_file_select.value
+
+                converter = ExcelToCsvConverter(input_dir=input_dir, output_dir=out_zip_dir)
+
+                if selected == "[全部已上传Excel文件]":
+                    files = [
+                        f for f in input_dir.iterdir()
+                        if f.is_file() and f.suffix.lower() in {".xlsx", ".xls", ".xlsm", ".xlsb"}
+                    ]
+                    total = len(files)
+                    if total == 0:
+                        on_excel_progress(0, 0, "", True, "未找到任何已上传的 Excel 文件。")
+                        return
+                    for idx, fp in enumerate(files, start=1):
+                        paths = await converter.convert_file(
+                            excel_path=fp,
+                            out_dir=out_zip_dir,
+                            progress_callback=on_excel_progress,
+                            file_idx=idx,
+                            total_files=total,
+                        )
+                        output_csv_files.extend(paths)
+                else:
+                    fp = input_dir / selected
+                    if not fp.exists():
+                        raise FileNotFoundError(f"文件不存在: {selected}")
+                    paths = await converter.convert_file(
+                        excel_path=fp,
+                        out_dir=out_zip_dir,
+                        progress_callback=on_excel_progress,
+                        file_idx=1,
+                        total_files=1,
+                    )
+                    output_csv_files.extend(paths)
+
+            # 生成转换报告
+            report_file = None
+            if excel_conversion_logs:
+                report_file = generate_csv_excel_report(excel_conversion_logs, out_zip_dir, direction="Excel ➔ CSV (多Sheet无损拆分)")
+                try:
+                    rel_report = report_file.relative_to(BASE_DIR)
+                    with excel_download_container:
+                        ui.link("📊 下载转换报告 (report.md)",
+                                f"/download/{rel_report.as_posix()}",
+                                new_tab=True).classes(
+                            "bg-indigo-600 hover:bg-indigo-700 text-white text-xs "
+                            "px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
+                        )
+                except ValueError:
+                    pass
+
+                # 新增：报告预览展示
+                if report_file and report_file.exists() and excel_report_preview:
+                    try:
+                        report_text = report_file.read_text(encoding="utf-8")
+                        excel_report_preview.set_content(report_text)
+                        excel_report_preview.visible = True
+                    except Exception:
+                        pass
+
+            # 打包全部 CSV 为单个 ZIP
+            if output_csv_files:
+                zip_path = out_zip_dir / "excel_to_csv_files.zip"
+                try:
+                    if zip_path.exists():
+                        zip_path.unlink()
+                except Exception:
+                    pass
+                
+                # 新增：将报告文件也一同打包进 ZIP 中
+                files_to_zip = list(output_csv_files)
+                if report_file and report_file.exists():
+                    files_to_zip.append(report_file)
+                    
+                await asyncio.to_thread(create_zip_archive, files_to_zip, zip_path)
+                if zip_path.exists():
+                    try:
+                        rel_zip = zip_path.relative_to(BASE_DIR)
+                        with excel_download_container:
+                            ui.link("📦 下载全部 CSV 文件 (ZIP)",
+                                    f"/download/{rel_zip.as_posix()}",
+                                    new_tab=True).classes(
+                                "bg-amber-600 hover:bg-amber-700 text-white text-xs "
+                                "px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline font-bold"
+                            )
+                    except ValueError:
+                        pass
+
+            if excel_conversion_logs or output_csv_files:
+                excel_download_container.visible = True
+
+            excel_dialog_status.set_text(
+                f"转换完成！共生成 {len(output_csv_files)} 个 CSV 文件。"
+            )
+            log_action(f"模块 1 (Excel→CSV) 转换成功，生成了 {len(output_csv_files)} 个 CSV 文件。")
+
+        except Exception as err:
+            excel_dialog_status.set_text(f"转换失败: {str(err)}")
+            ui.notify(f"转换失败: {str(err)}", type="negative", position="top")
+        finally:
+            await asyncio.sleep(3)
+            excel_dialog_progress.visible = False
+            excel_dialog_status.visible = False
 
     # =========================================================
     # 模組 2: PDF 查重與去密回調函數
@@ -676,10 +1022,10 @@ def main_page() -> None:
                     pdf_dedup_results_container.visible = False
             last_pdf_dedup_upload_time = now
 
-            file_path = input_dir / e.file.name
+            file_path = input_dir / Path(e.file.name).name
             data = await e.file.read()
             file_path.write_bytes(data)
-            ui.notify(f"PDF 文件 {e.file.name} 上傳成功！已暫存至後端。", type="positive", position="top")
+            ui.notify(f"PDF 文件 {Path(e.file.name).name} 上傳成功！已暫存至後端。", type="positive", position="top")
             
             files = [f.name for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf"]
             client_pdf_dedup_select.options = ["[全部已上傳PDF文件]"] + files
@@ -718,9 +1064,6 @@ def main_page() -> None:
             elif selected:
                 preserve_files = [input_dir / selected]
 
-        if auto_clear_switch and auto_clear_switch.value:
-            clear_data_directories(preserve_files=preserve_files, clear_archives=False)
-            log_action("模組 2 執行前已自動清空歷史臨時文件。")
 
         pdf_dedup_progress.set_value(0.0)
         pdf_dedup_progress.visible = True
@@ -747,11 +1090,11 @@ def main_page() -> None:
                 out_dir = OUTPUT_PDF_DIR
                 decrypt_path_str = pdf_dedup_out_dir_input.value if pdf_dedup_out_dir_input and pdf_dedup_out_dir_input.value else str(OUTPUT_PDF_DECRYPT_DIR)
                 decrypt_dir = Path(decrypt_path_str)
-                report_out_dir = OUTPUT_MD_DIR
+                report_out_dir = OUTPUT_PDF_DIR
             else:
                 out_dir = OUTPUT_PDF_DIR / "client_dedup_out"
                 decrypt_dir = OUTPUT_PDF_DECRYPT_DIR / "client_dedup_out"
-                report_out_dir = OUTPUT_MD_DIR / "client_dedup_out"
+                report_out_dir = OUTPUT_PDF_DIR / "client_dedup_out"
             
             out_dir.mkdir(parents=True, exist_ok=True)
             decrypt_dir.mkdir(parents=True, exist_ok=True)
@@ -912,12 +1255,12 @@ def main_page() -> None:
                     pdf_log_board.visible = False
             last_pdf_upload_time = now
 
-            file_path = input_dir / e.file.name
+            file_path = input_dir / Path(e.file.name).name
             
             # NiceGUI 3.x FileUpload.read() 是一个异步方法
             data = await e.file.read()
             file_path.write_bytes(data)
-            ui.notify(f"PDF 文件 {e.file.name} 上传成功！已暂存至后端。", type="positive", position="top")
+            ui.notify(f"PDF 文件 {Path(e.file.name).name} 上传成功！已暂存至后端。", type="positive", position="top")
             
             # 刷新已上传 PDF 文件列表
             files = [f.name for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf"]
@@ -927,7 +1270,7 @@ def main_page() -> None:
         except Exception as err:
             ui.notify(f"PDF 保存失败: {str(err)}", type="negative", position="top")
 
-    async def run_pdf_conversion() -> None:
+    async def run_pdf_to_md_conversion() -> None:
         """执行 PDF 转换为 Markdown，并支持对账校验与客户端下载"""
         if not pdf_file_select or not client_pdf_select or not pdf_progress or not pdf_status or not pdf_log_board or not pdf_log_container:
             return
@@ -940,6 +1283,8 @@ def main_page() -> None:
             selected = pdf_file_select.value
             path_str = pdf_local_dir_input.value if pdf_local_dir_input and pdf_local_dir_input.value else str(INPUT_PDF_DIR)
             input_dir = Path(path_str)
+            if not input_dir.exists():
+                input_dir.mkdir(parents=True, exist_ok=True)
             if selected == "[全部PDF文件]":
                 try:
                     preserve_files = [input_dir / f.name for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf"]
@@ -950,6 +1295,8 @@ def main_page() -> None:
         else:
             selected = client_pdf_select.value
             input_dir = INPUT_PDF_DIR / "client_pdf_temp"
+            if not input_dir.exists():
+                input_dir.mkdir(parents=True, exist_ok=True)
             if selected == "[全部已上传PDF文件]":
                 try:
                     preserve_files = [input_dir / f.name for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf"]
@@ -958,9 +1305,6 @@ def main_page() -> None:
             elif selected:
                 preserve_files = [input_dir / selected]
 
-        if auto_clear_switch and auto_clear_switch.value:
-            clear_data_directories(preserve_files=preserve_files, clear_archives=False)
-            log_action("模块 3 执行前已自动清空历史临时文件。")
 
         pdf_progress.set_value(0.0)
         pdf_progress.visible = True
@@ -984,7 +1328,9 @@ def main_page() -> None:
                 audit_logs = progress.audit_alerts
                 
                 if audit_logs:
-                    all_audit_logs.extend(audit_logs)
+                    for log in audit_logs:
+                        if log.get("type") != "MD转CSV":
+                            all_audit_logs.append(log)
                 
                 if total_files > 0 and total_pages > 0:
                     current_progress = (file_idx - 1) / total_files + (page_num / total_pages) / total_files
@@ -995,39 +1341,53 @@ def main_page() -> None:
                     
             # 看板渲染审计日志行
             for log in progress.audit_alerts:
-                if log["status"] == "success":
+                status = log.get("status")
+                if status == "success":
                     bg_color, text_color, icon = "bg-emerald-950/40 border-emerald-500/30", "text-emerald-400", "✅"
                     animate_class = ""
-                elif log["status"] == "warning":
+                elif status == "warning":
                     bg_color, text_color, icon = "bg-amber-950/40 border-amber-500/30", "text-amber-400", "⚠️"
                     animate_class = ""
-                elif log["status"] == "NEED_VISUAL_REVIEW":
+                elif status == "NEED_VISUAL_REVIEW":
                     bg_color, text_color, icon = "bg-indigo-950/60 border-indigo-500/40", "text-indigo-300", "👁️"
                     animate_class = "animate-pulse font-semibold"
                 else:
                     bg_color, text_color, icon = "bg-rose-950/40 border-rose-500/30", "text-rose-400", "❌"
                     animate_class = ""
                     
+                page_suffix = f" P.{log['page']}" if "page" in log else ""
+                file_name = log.get("file", "Unknown")
+                log_type = log.get("type", "None")
+                log_msg = log.get("message", "")
+                
                 with pdf_log_container:
                     with ui.row().classes(f"w-full items-center p-2 rounded-lg border {bg_color} text-xs font-mono {animate_class}"):
                         ui.label(icon).classes("mr-1")
-                        ui.label(f"[{log['file']} P.{log['page']}]").classes("font-bold text-slate-300 mr-2")
-                        ui.label(f"【{log['type']}】").classes("font-semibold mr-2")
-                        ui.label(log["message"]).classes(text_color)
+                        ui.label(f"[{file_name}{page_suffix}]").classes("font-bold text-slate-300 mr-2")
+                        ui.label(f"【{log_type}】").classes("font-semibold mr-2")
+                        ui.label(log_msg).classes(text_color)
                         
                 # 滚动至看板底部
                 ui.run_javascript(f"document.getElementById('{pdf_log_board.id}').scrollTop = document.getElementById('{pdf_log_board.id}').scrollHeight")
 
         output_md_files: list[Path] = []
         try:
-            parser = PDFBatchParser(input_dir=INPUT_PDF_DIR, output_dir=OUTPUT_MD_DIR) # Default dirs
+            if mode == "server":
+                report_out_md_dir = OUTPUT_MD_DIR
+            else:
+                report_out_md_dir = OUTPUT_MD_DIR / "client_pdf_out"
+            report_out_md_dir.mkdir(parents=True, exist_ok=True)
+
+            parser = PDFBatchParser(input_dir=INPUT_PDF_DIR, output_dir=report_out_md_dir) # Default dirs
             
             if mode == "server":
                 selected = pdf_file_select.value
                 path_str = pdf_local_dir_input.value if pdf_local_dir_input and pdf_local_dir_input.value else str(INPUT_PDF_DIR)
                 input_dir = Path(path_str)
+                if not input_dir.exists():
+                    input_dir.mkdir(parents=True, exist_ok=True)
                 
-                parser = PDFBatchParser(input_dir=input_dir, output_dir=OUTPUT_MD_DIR)
+                parser = PDFBatchParser(input_dir=input_dir, output_dir=report_out_md_dir)
                 if selected == "[全部PDF文件]":
                     output_files = await parser.parse_all(progress_callback=on_progress)
                     for out_path in output_files:
@@ -1035,6 +1395,8 @@ def main_page() -> None:
                         if out_path_obj.exists():
                             output_md_files.append(out_path_obj)
                 else:
+                    if not selected:
+                        raise FileNotFoundError("未选择任何待解析的 PDF 文件！")
                     file_path = input_dir / selected
                     if file_path.exists():
                         out_path = await parser.parse_file(file_path, 1, 1, progress_callback=on_progress)
@@ -1047,8 +1409,10 @@ def main_page() -> None:
             else:
                 selected = client_pdf_select.value
                 input_dir = INPUT_PDF_DIR / "client_pdf_temp"
+                if not input_dir.exists():
+                    input_dir.mkdir(parents=True, exist_ok=True)
                 
-                parser = PDFBatchParser(input_dir=input_dir, output_dir=OUTPUT_MD_DIR)
+                parser = PDFBatchParser(input_dir=input_dir, output_dir=report_out_md_dir)
                 if selected == "[全部已上传PDF文件]":
                     files = [f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf"]
                     total_files = len(files)
@@ -1061,6 +1425,8 @@ def main_page() -> None:
                         if out_path_obj.exists():
                             output_md_files.append(out_path_obj)
                 else:
+                    if not selected:
+                        raise FileNotFoundError("未选择任何待解析的已上传 PDF 文件！")
                     file_path = input_dir / selected
                     if file_path.exists():
                         out_path = await parser.parse_file(file_path, 1, 1, progress_callback=on_progress)
@@ -1071,53 +1437,230 @@ def main_page() -> None:
                     else:
                         raise FileNotFoundError(f"文件不存在: {selected}")
             
-            # 定義報告輸出目錄
-            if mode == "server":
-                report_out_dir = OUTPUT_MD_DIR
-            else:
-                report_out_dir = OUTPUT_MD_DIR / "client_pdf_out"
+            # 1. 生成 report.md 審計報告并提供下載 (MD 阶段)
+            report_file = generate_pdf_conversion_report(all_audit_logs, report_out_md_dir)
             
-            # 生成 report.md 審計報告并提供下載
-            report_file = generate_pdf_conversion_report(all_audit_logs, report_out_dir)
-            try:
-                rel_report = report_file.relative_to(BASE_DIR)
-                report_url = f"/download/{rel_report.as_posix()}"
-                with pdf_download_container:
-                    ui.link("📊 下載審計報告 (report.md)", report_url, new_tab=True).classes(
-                        "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
-                    )
-            except ValueError:
-                pass
-
             # 如果有生成的 Markdown 文件，則打包為單一 ZIP
+            zip_file_path = report_out_md_dir / "parsed_markdown_files.zip"
             if output_md_files:
-                if mode == "server":
-                    out_zip_dir = OUTPUT_MD_DIR
-                else:
-                    out_zip_dir = OUTPUT_MD_DIR / "client_pdf_out"
-                out_zip_dir.mkdir(parents=True, exist_ok=True)
-                zip_file_path = out_zip_dir / "parsed_markdown_files.zip"
                 if zip_file_path.exists():
                     zip_file_path.unlink()
-                
                 await asyncio.to_thread(create_zip_archive, output_md_files, zip_file_path)
+            
+            # 在 NiceGUI 下载容器中展示 MD 的链接
+            with pdf_download_container:
+                # 1. MD 报告
+                try:
+                    rel_report = report_file.relative_to(BASE_DIR)
+                    report_url = f"/download/{rel_report.as_posix()}"
+                    ui.link("📊 下載 MD 審計報告 (report.md)", report_url, new_tab=True).classes(
+                        "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
+                    )
+                except ValueError:
+                    pass
                 
+                # 2. MD 压缩包
                 if zip_file_path.exists():
                     try:
                         rel_zip = zip_file_path.relative_to(BASE_DIR)
                         zip_url = f"/download/{rel_zip.as_posix()}"
-                        with pdf_download_container:
-                            ui.link("📦 下载全部解析件 (ZIP 打包档)", zip_url, new_tab=True).classes(
-                                "bg-amber-600 hover:bg-amber-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline font-bold"
-                            )
+                        ui.link("📦 下载全部 MD 解析件 (ZIP)", zip_url, new_tab=True).classes(
+                            "bg-amber-600 hover:bg-amber-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline font-bold"
+                        )
                     except ValueError:
                         pass
-                pdf_download_container.visible = True
-            
-            pdf_status.set_text("PDF 解析与勾稽审计完成！")
+                        
+            pdf_download_container.visible = True
+            pdf_status.set_text("PDF 转 Markdown 转换全部完成！")
+            log_action(f"PDF 转 Markdown 解析全部成功。生成了 {len(output_md_files)} 个 Markdown 文件。")
         except Exception as err:
             pdf_status.set_text(f"解析失败: {str(err)}")
             ui.notify(f"解析失败: {str(err)}", type="negative", position="top")
+        finally:
+            await asyncio.sleep(5)
+            pdf_progress.visible = False
+            pdf_status.visible = False
+
+    async def run_md_to_csv_conversion() -> None:
+        """执行 Markdown 转换为 CSV 格式"""
+        if not pdf_progress or not pdf_status or not pdf_log_board or not pdf_log_container or not pdf_download_container:
+            return
+            
+        mode = pdf_source_type.value
+        
+        # 确定当前的 MD 文件夹路径
+        if mode == "server":
+            report_out_md_dir = OUTPUT_MD_DIR
+            report_out_csv_dir = OUTPUT_CSV_DIR
+        else:
+            report_out_md_dir = OUTPUT_MD_DIR / "client_pdf_out"
+            report_out_csv_dir = OUTPUT_CSV_DIR / "client_pdf_out"
+            
+        if not report_out_md_dir.exists():
+            report_out_md_dir.mkdir(parents=True, exist_ok=True)
+        if not report_out_csv_dir.exists():
+            report_out_csv_dir.mkdir(parents=True, exist_ok=True)
+            
+        # 扫描目录下所有的 .md 文件，排除 report*.md 和 zip 文件，并同时检索 /output/md 和 /output/md/client_pdf_out 目录
+        import fnmatch
+        md_files = []
+        seen_names = set()
+        
+        # 动态排列扫描顺序，优先考虑当前 mode 对应的文件夹
+        dirs_to_scan = []
+        if mode == "server":
+            dirs_to_scan = [OUTPUT_MD_DIR, OUTPUT_MD_DIR / "client_pdf_out"]
+        else:
+            dirs_to_scan = [OUTPUT_MD_DIR / "client_pdf_out", OUTPUT_MD_DIR]
+            
+        for folder in dirs_to_scan:
+            if not folder.exists():
+                continue
+            for f in folder.iterdir():
+                if not f.is_file():
+                    continue
+                name_lower = f.name.lower()
+                # 排除 zip 文件
+                if f.suffix.lower() == ".zip" or "zip" in name_lower:
+                    continue
+                # 排除 report*.md 文件
+                if fnmatch.fnmatch(name_lower, "report*.md"):
+                    continue
+                # 仅保留 .md 文件
+                if f.suffix.lower() == ".md":
+                    if f.name not in seen_names:
+                        md_files.append(f)
+                        seen_names.add(f.name)
+        
+        if not md_files:
+            ui.notify("⚠️ 在输出目录中未发现任何待转换的 Markdown 文件。请先执行 'PDF 转 MD'。", type="warning", position="top")
+            pdf_status.set_text("转换终止：未发现 .md 文件")
+            return
+            
+        pdf_progress.set_value(0.0)
+        pdf_progress.visible = True
+        pdf_status.visible = True
+        pdf_log_board.visible = True
+        pdf_log_container.clear()
+        pdf_status.set_text("正在启动 Markdown 转 CSV 阶段...")
+        
+        pdf_download_container.clear()
+        pdf_download_container.visible = False
+        
+        all_csv_audit_logs = []
+        output_csv_files = []
+        
+        def on_csv_progress(progress: ParserProgress) -> None:
+            if pdf_progress and pdf_status:
+                file_idx = progress.current_file_idx
+                total_files = progress.total_files
+                page_num = progress.current_page
+                total_pages = progress.total_pages
+                message = progress.status_msg
+                
+                if total_files > 0 and total_pages > 0:
+                    current_progress = (file_idx - 1) / total_files + (page_num / total_pages) / total_files
+                    pdf_progress.set_value(current_progress)
+                    pdf_status.set_text(f"文件 ({file_idx}/{total_files}) - {message}")
+                else:
+                    pdf_status.set_text(message)
+                    
+            # 看板渲染审计日志行
+            for log in progress.audit_alerts:
+                status = log.get("status")
+                if status == "success":
+                    bg_color, text_color, icon = "bg-emerald-950/40 border-emerald-500/30", "text-emerald-400", "✅"
+                elif status == "warning":
+                    bg_color, text_color, icon = "bg-amber-950/40 border-amber-500/30", "text-amber-400", "⚠️"
+                else:
+                    bg_color, text_color, icon = "bg-rose-950/40 border-rose-500/30", "text-rose-400", "❌"
+                    
+                page_suffix = f" P.{log['page']}" if "page" in log else ""
+                file_name = log.get("file", "Unknown")
+                log_type = log.get("type", "None")
+                log_msg = log.get("message", "")
+                
+                with pdf_log_container:
+                    with ui.row().classes(f"w-full items-center p-2 rounded-lg border {bg_color} text-xs font-mono"):
+                        ui.label(icon).classes("mr-1")
+                        ui.label(f"[{file_name}{page_suffix}]").classes("font-bold text-slate-300 mr-2")
+                        ui.label(f"【{log_type}】").classes("font-semibold mr-2")
+                        ui.label(log_msg).classes(text_color)
+                        
+                # 滚动至看板底部
+                ui.run_javascript(f"document.getElementById('{pdf_log_board.id}').scrollTop = document.getElementById('{pdf_log_board.id}').scrollHeight")
+
+        try:
+            total_files = len(md_files)
+            for idx, md_file in enumerate(md_files, start=1):
+                csv_file_path = report_out_csv_dir / f"{md_file.stem}.csv"
+                on_csv_progress(ParserProgress(
+                    current_file_idx=idx,
+                    total_files=total_files,
+                    current_page=50,
+                    total_pages=100,
+                    status_msg=f"正在将 {md_file.name} 转换为 CSV...",
+                    audit_alerts=[]
+                ))
+                
+                csv_alerts = await asyncio.to_thread(md_csv.convert_md_to_csv, md_file, csv_file_path)
+                
+                if csv_file_path.exists():
+                    output_csv_files.append(csv_file_path)
+                all_csv_audit_logs.extend(csv_alerts)
+                
+                # 实时渲染 CSV 转换警告
+                on_csv_progress(ParserProgress(
+                    current_file_idx=idx,
+                    total_files=total_files,
+                    current_page=100,
+                    total_pages=100,
+                    status_msg=f"✅ {md_file.name} 转换为 CSV 完成！",
+                    audit_alerts=csv_alerts
+                ))
+                
+            # 生成 CSV 转换报告
+            csv_report_file = generate_md_csv_conversion_report(all_csv_audit_logs, report_out_csv_dir)
+            
+            # 打包 CSV 为单个 ZIP
+            zip_csv_file_path = report_out_csv_dir / "parsed_csv_files.zip"
+            if output_csv_files:
+                try:
+                    if zip_csv_file_path.exists():
+                        zip_csv_file_path.unlink()
+                except Exception as zip_err:
+                    print(f"删除旧 ZIP 归档失败: {zip_err}")
+                await asyncio.to_thread(create_zip_archive, output_csv_files, zip_csv_file_path)
+                
+            # 在 NiceGUI 下载容器中展示 CSV 的链接
+            with pdf_download_container:
+                # 1. CSV 报告
+                try:
+                    rel_csv_report = csv_report_file.relative_to(BASE_DIR)
+                    csv_report_url = f"/download/{rel_csv_report.as_posix()}"
+                    ui.link("📊 下載 CSV 轉換報告 (report.md)", csv_report_url, new_tab=True).classes(
+                        "bg-teal-600 hover:bg-teal-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
+                    )
+                except ValueError:
+                    pass
+                
+                # 2. CSV 压缩包
+                if zip_csv_file_path.exists():
+                    try:
+                        rel_csv_zip = zip_csv_file_path.relative_to(BASE_DIR)
+                        csv_zip_url = f"/download/{rel_csv_zip.as_posix()}"
+                        ui.link("📦 下载全部 CSV 转换件 (ZIP)", csv_zip_url, new_tab=True).classes(
+                            "bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline font-bold"
+                        )
+                    except ValueError:
+                        pass
+                        
+            pdf_download_container.visible = True
+            pdf_status.set_text("Markdown 转 CSV 转换全部完成！")
+            log_action(f"Markdown 转 CSV 转换全部成功。生成了 {len(output_csv_files)} 个 CSV 文件。")
+        except Exception as err:
+            pdf_status.set_text(f"转换失败: {str(err)}")
+            ui.notify(f"转换失败: {str(err)}", type="negative", position="top")
         finally:
             await asyncio.sleep(5)
             pdf_progress.visible = False
@@ -1144,8 +1687,8 @@ def main_page() -> None:
         try:
             nonlocal md_closing_uploaded_files
             data = await e.file.read()
-            md_closing_uploaded_files.append((e.file.name, data))
-            ui.notify(f"Markdown 文件 {e.file.name} 上传并暂存成功！", type="positive", position="top")
+            md_closing_uploaded_files.append((Path(e.file.name).name, data))
+            ui.notify(f"Markdown 文件 {Path(e.file.name).name} 上传并暂存成功！", type="positive", position="top")
         except Exception as err:
             ui.notify(f"上传失败: {str(err)}", type="negative", position="top")
 
@@ -1259,6 +1802,144 @@ def main_page() -> None:
                 md_closing_status.visible = False
 
     # =========================================================
+    # 模块 12: CSV 平仓交易整理回调函数
+    # =========================================================
+    def handle_csv_closing(e: events.ClickEventArguments) -> None:
+        nonlocal csv_closing_uploaded_files
+        csv_closing_uploaded_files = []
+        if csv_closing_download_container:
+            csv_closing_download_container.clear()
+            csv_closing_download_container.visible = False
+        if csv_closing_progress:
+            csv_closing_progress.set_value(0.0)
+            csv_closing_progress.visible = False
+        if csv_closing_status:
+            csv_closing_status.set_text("等待上传与整理...")
+            csv_closing_status.visible = False
+        csv_closing_dialog.open()
+
+    async def on_csv_upload_closing(e: events.UploadEventArguments) -> None:
+        try:
+            nonlocal csv_closing_uploaded_files
+            data = await e.file.read()
+            csv_closing_uploaded_files.append((Path(e.file.name).name, data))
+            ui.notify(f"CSV 文件 {Path(e.file.name).name} 上传并暂存成功！", type="positive", position="top")
+        except Exception as err:
+            ui.notify(f"上传失败: {str(err)}", type="negative", position="top")
+
+    async def run_csv_closing_organization() -> None:
+        nonlocal csv_closing_uploaded_files
+        if not csv_closing_uploaded_files:
+            ui.notify("请先上传至少一个 CSV 交易明细文件！", type="warning", position="top")
+            return
+            
+        csv_closing_progress.set_value(0.0)
+        csv_closing_progress.visible = True
+        csv_closing_status.visible = True
+        csv_closing_status.set_text("正在提取并整理平仓成交明细...")
+        
+        csv_closing_download_container.clear()
+        csv_closing_download_container.visible = False
+        
+        start_date = None
+        end_date = None
+        if csv_closing_start_date.value:
+            start_date = csv_closing.parse_date(csv_closing_start_date.value)
+        if csv_closing_end_date.value:
+            end_date = csv_closing.parse_date(csv_closing_end_date.value)
+            
+        all_closing_trades = []
+        all_open_trades = []
+        all_close_trades = []
+        all_headers = []
+        
+        try:
+            for file_name, file_bytes in csv_closing_uploaded_files:
+                csv_content = file_bytes.decode("utf-8", errors="ignore")
+                tables = csv_closing.parse_csv_tables(csv_content)
+                trades_all, trades_open, trades_close, headers = csv_closing.extract_closing_trades(tables, start_date, end_date)
+                
+                for t in trades_all:
+                    t["来自文件"] = file_name
+                for t in trades_open:
+                    t["来自文件"] = file_name
+                for t in trades_close:
+                    t["来自文件"] = file_name
+                    
+                all_closing_trades.extend(trades_all)
+                all_open_trades.extend(trades_open)
+                all_close_trades.extend(trades_close)
+                
+                for h in headers:
+                    if h not in all_headers:
+                        all_headers.append(h)
+                
+            csv_closing_progress.set_value(0.5)
+            csv_closing_status.set_text("正在生成 Excel 整理表与审计报告...")
+            
+            out_dir = OUTPUT_DIR / "closing_summary_csv"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            
+            excel_path, report_path = await asyncio.to_thread(
+                csv_closing.generate_closing_report,
+                all_closing_trades,
+                all_open_trades,
+                all_close_trades,
+                all_headers,
+                out_dir,
+                csv_closing_start_date.value or "",
+                csv_closing_end_date.value or ""
+            )
+            
+            zip_file_path = out_dir / "organized_closing_data_csv.zip"
+            if zip_file_path.exists():
+                try:
+                    zip_file_path.unlink()
+                except Exception as zip_err:
+                    print(f"删除旧 ZIP 归档失败: {zip_err}")
+                
+            await asyncio.to_thread(create_zip_archive, [excel_path], zip_file_path)
+            
+            csv_closing_progress.set_value(1.0)
+            csv_closing_status.set_text(f"平仓数据整理完成！匹配到 {len(all_close_trades)} 笔平仓成交 (总记录 {len(all_closing_trades)} 笔)。")
+            
+            try:
+                rel_report = report_path.relative_to(BASE_DIR)
+                report_url = f"/download/{rel_report.as_posix()}"
+                with csv_closing_download_container:
+                    ui.link("📊 下载整理报告 (report.md)", report_url, new_tab=True).classes(
+                        "bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline"
+                    )
+            except ValueError:
+                pass
+                
+            if zip_file_path.exists():
+                try:
+                    rel_zip = zip_file_path.relative_to(BASE_DIR)
+                    zip_url = f"/download/{rel_zip.as_posix()}"
+                    with csv_closing_download_container:
+                        ui.link("📦 下载全部整理件 (ZIP 打包档)", zip_url, new_tab=True).classes(
+                            "bg-amber-600 hover:bg-amber-700 text-white text-xs px-3 py-1.5 rounded-lg font-semibold shadow-sm no-underline font-bold"
+                        )
+                except ValueError:
+                    pass
+                    
+            csv_closing_download_container.visible = True
+            ui.notify(f"整理成功！提取出 {len(all_closing_trades)} 笔平仓成交数据。", type="positive", position="top")
+            log_action(f"模块 12 执行成功：时间段为 {csv_closing_start_date.value or '未限定'} - {csv_closing_end_date.value or '未限定'}，匹配到 {len(all_closing_trades)} 笔平仓明细并已生成 ZIP")
+            
+        except Exception as err:
+            csv_closing_status.set_text(f"整理失败: {str(err)}")
+            ui.notify(f"数据整理失败: {str(err)}", type="negative", position="top")
+            
+        finally:
+            await asyncio.sleep(5)
+            if csv_closing_progress:
+                csv_closing_progress.visible = False
+            if csv_closing_status:
+                csv_closing_status.visible = False
+
+    # =========================================================
     # 智能控制台回调函数与辅助方法 (新模块集成)
     # =========================================================
     sys_log_board: ui.card = None
@@ -1351,8 +2032,10 @@ def main_page() -> None:
                         ui.icon("info", size="1.5rem").classes("text-indigo-600")
                         ui.label("项目控制中心与工具箱").classes("text-lg font-bold text-slate-800")
                     ui.markdown(
-                        "本系统严格遵循 `gemini.md` 规范进行架构设计。下方工具箱集成了核心的报税处理程序，"
-                        "所有数据流转均支持**长数字安全保护（避免身份证、企业税号科学计数法截断）**。"
+                        "1. **系统架构**: 本系统严格遵循 `gemini.md` 规范进行架构设计。\n"
+                        "2. **数字安全**: 下方工具箱集成了核心的报税处理程序，所有数据流转均支持**长数字安全保护（避免身份证、企业税号科学计数法截断）**。\n"
+                        "3. **证券基金报税**: 证券基金报税使用模块 1、2、3、11、12 即可整理出成交明细。\n"
+                        "4. **模块协同对账**: 模块 11、12 功能相同，区别是使用的文件类型不同，并互为校验。"
                     ).classes("text-slate-600 text-sm leading-relaxed")
                 
                 # 数据缓存与临时文件清理控制面板
@@ -1464,43 +2147,99 @@ def main_page() -> None:
                         label="银行及券商名称 (目录隔离)",
                         placeholder="例如：招商银行 / 中信证券",
                     ).classes("w-full text-xs").on("blur", on_bank_name_change).on("keydown.enter", on_bank_name_change)
-                    
-                    auto_clear_switch = ui.switch("启动模块时清空历史文件", value=False).classes("text-xs text-slate-600")
-                    
+
+                    # --- 目录状态检查展示区 ---
+                    dir_check_label = ui.label("").classes("text-xs text-slate-400 whitespace-pre-wrap leading-snug font-mono")
+
+                    def refresh_dir_check():
+                        """检查当前各资料目录的文件数与占用大小"""
+                        lines = []
+                        dirs_to_check = [
+                            ("PDF 输入", INPUT_PDF_DIR),
+                            ("CSV 输入", INPUT_CSV_DIR),
+                            ("Exl 输入", INPUT_EXCEL_DIR),
+                            ("MD  输入", INPUT_MD_DIR),
+                            ("PDF 输出", OUTPUT_PDF_DIR),
+                            ("CSV 输出", OUTPUT_CSV_DIR),
+                            ("Exl 输出", OUTPUT_EXCEL_DIR),
+                            ("MD  输出", OUTPUT_MD_DIR),
+                        ]
+                        for name, d in dirs_to_check:
+                            if d and d.exists():
+                                files = [f for f in d.rglob("*") if f.is_file()]
+                                total_bytes = sum(f.stat().st_size for f in files)
+                                if total_bytes >= 1024 * 1024:
+                                    size_str = f"{total_bytes / 1024 / 1024:.1f}MB"
+                                elif total_bytes >= 1024:
+                                    size_str = f"{total_bytes / 1024:.1f}KB"
+                                else:
+                                    size_str = f"{total_bytes}B"
+                                lines.append(f"{name}: {len(files)}个文件  {size_str}")
+                            else:
+                                lines.append(f"{name}: 目录不存在")
+                        dir_check_label.set_text("\n".join(lines))
+
+                    ui.button("🔍 检查目录状态", on_click=refresh_dir_check).classes(
+                        "w-full bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-2 px-3 rounded-lg shadow-sm"
+                    )
+
                     def manual_clear():
+                        """清空后端文件后立即重建活动目录，防止后续上传报 FileNotFoundError"""
                         clear_data_directories(clear_archives=False)
-                        ui.notify("已成功清理后端 data 目錄下的所有子目錄與暫存檔案！", type="positive", position="top")
+                        # 清空后重建活动目录
+                        for d in [
+                            INPUT_PDF_DIR, INPUT_CSV_DIR, INPUT_EXCEL_DIR, INPUT_MD_DIR,
+                            OUTPUT_PDF_DIR, OUTPUT_PDF_DECRYPT_DIR,
+                            OUTPUT_CSV_DIR, OUTPUT_EXCEL_DIR, OUTPUT_MD_DIR,
+                        ]:
+                            if d:
+                                try:
+                                    d.mkdir(parents=True, exist_ok=True)
+                                except Exception:
+                                    pass
+                        refresh_dir_check()
+                        ui.notify("已成功清理后端 data 目录下的所有子目录与暂存文件！", type="positive", position="top")
                         log_action("手动执行后端 data 目录所有子目录文件清理。")
-                        
+
                     ui.button("🧹 一键清空后端文件", on_click=manual_clear).classes(
                         "w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold py-2 px-3 rounded-lg shadow-sm"
                     )
+
         
-        # 11 个功能卡的网格布局
-        ui.label("系统控制工具箱 (11 大功能项)").classes("text-base font-semibold text-slate-500 uppercase tracking-wider mt-4")
+        # 12 个功能卡的网格布局
+        ui.label("系统控制工具箱 (12 大功能项)").classes("text-base font-semibold text-slate-500 uppercase tracking-wider mt-4")
         
         with ui.grid().classes("grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 w-full"):
             
-            # --- 核心规划工具 1: CSV/Excel 转换 ---
-            with ui.card().classes("hover:shadow-md transition-all duration-300 border border-slate-200 rounded-xl p-5 flex flex-col justify-between h-48 bg-white"):
-                with ui.column().classes("gap-1 w-full"):
-                    ui.label("1. CSV & Excel 互转").classes("font-bold text-slate-800 text-base")
-                    ui.label("支持选择单个或批量 CSV 文件进行无损 Excel 格式互转，防长数字字段精度丢失。").classes("text-xs text-slate-500")
-                ui.button("启动转换", on_click=handle_csv_excel).classes("w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2 text-sm font-semibold shadow-sm")
-
-            # --- 核心规划工具 2: PDF 查重删除 ---
+            # --- 核心规划工具 1: PDF 查重删除 ---
             with ui.card().classes("hover:shadow-md transition-all duration-300 border border-slate-200 rounded-xl p-5 flex flex-col justify-between h-48 bg-white"):
                 with ui.column().classes("gap-1"):
-                    ui.label("2. PDF 文件查重").classes("font-bold text-slate-800 text-base")
+                    ui.label("1. PDF 文件查重").classes("font-bold text-slate-800 text-base")
                     ui.label("扫描输入目录，智能去重多余 PDF 报税文件，并导出清理结果报告。").classes("text-xs text-slate-500")
                 ui.button("开始查重", on_click=handle_pdf_deduplication).classes("w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2 text-sm font-semibold shadow-sm")
+
+            # --- 核心规划工具 2: CSV/Excel 互转 ---
+            with ui.card().classes("hover:shadow-md transition-all duration-300 border border-slate-200 rounded-xl p-5 flex flex-col justify-between h-48 bg-white"):
+                with ui.column().classes("gap-1 w-full"):
+                    ui.label("2. CSV ↔ Excel 互转").classes("font-bold text-slate-800 text-base")
+                    ui.label("支持无损批量互转，保留发票号等长数字前导零；Excel 多 Sheet 自动拆分为独立 CSV。").classes("text-xs text-slate-500")
+                with ui.row().classes("w-full gap-2"):
+                    ui.button("CSV → Excel", on_click=handle_csv_excel).classes(
+                        "flex-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2 text-xs font-semibold shadow-sm"
+                    )
+                    ui.button("Excel → CSV", on_click=handle_excel_csv).classes(
+                        "flex-1 bg-teal-600 hover:bg-teal-700 text-white rounded-lg py-2 text-xs font-semibold shadow-sm"
+                    )
+
 
             # --- 核心规划工具 3: PDF 转 Markdown ---
             with ui.card().classes("hover:shadow-md transition-all duration-300 border border-slate-200 rounded-xl p-5 flex flex-col justify-between h-48 bg-white"):
                 with ui.column().classes("gap-1"):
                     ui.label("3. PDF 结单提取").classes("font-bold text-slate-800 text-base")
-                    ui.label("将 PDF 格式的报税单/结单结构化转化为 Markdown 格式，便于系统自动分析和入库。").classes("text-xs text-slate-500")
-                ui.button("启动解析", on_click=handle_pdf_md).classes("w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2 text-sm font-semibold shadow-sm")
+                    ui.label("将 PDF 格式的报税单/结单结构化转化为 Markdown 格式，并提取交易数据转换为 CSV 档案。").classes("text-xs text-slate-500")
+                with ui.row().classes("w-full gap-2"):
+                    ui.button("PDF 转 MD", on_click=handle_pdf_md).classes("flex-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2 text-xs font-semibold shadow-sm")
+                    ui.button("MD 转 CSV", on_click=handle_pdf_md).classes("flex-1 bg-teal-600 hover:bg-teal-700 text-white rounded-lg py-2 text-xs font-semibold shadow-sm")
 
             # --- 功能 4: 数据库连接测试 ---
             with ui.card().classes("hover:shadow-md transition-all duration-300 border border-slate-200 rounded-xl p-5 flex flex-col justify-between h-48 bg-white"):
@@ -1554,9 +2293,16 @@ def main_page() -> None:
             # --- 功能 11: 平仓数据整理 ---
             with ui.card().classes("hover:shadow-md transition-all duration-300 border border-slate-200 rounded-xl p-5 flex flex-col justify-between h-48 bg-white"):
                 with ui.column().classes("gap-1"):
-                    ui.label("11. 平仓交易整理").classes("font-bold text-slate-800 text-base")
+                    ui.label("11. md平仓交易整理").classes("font-bold text-slate-800 text-base")
                     ui.label("上传指定 Markdown 账单文件，按指定时间段提取整理平仓成交的标的，输出 Excel。").classes("text-xs text-slate-500")
                 ui.button("整理平仓数据", on_click=handle_md_closing).classes("w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2 text-sm font-semibold shadow-sm")
+
+            # --- 功能 12: CSV 平仓交易整理 ---
+            with ui.card().classes("hover:shadow-md transition-all duration-300 border border-slate-200 rounded-xl p-5 flex flex-col justify-between h-48 bg-white"):
+                with ui.column().classes("gap-1"):
+                    ui.label("12. CSV 平仓交易整理").classes("font-bold text-slate-800 text-base")
+                    ui.label("上传指定 CSV 账单文件，按指定时间段提取整理平仓成交的标的，输出 Excel。").classes("text-xs text-slate-500")
+                ui.button("整理 CSV 平仓数据", on_click=handle_csv_closing).classes("w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2 text-sm font-semibold shadow-sm")
 
     # --- CSV/Excel 转换交互对话框 (Dialog) ---
     with ui.dialog() as csv_excel_dialog:
@@ -1626,10 +2372,14 @@ def main_page() -> None:
             csv_download_container = ui.row().classes("w-full justify-center gap-2 mt-2")
             csv_download_container.visible = False
             
+            # 报告预览展示组件
+            csv_report_preview = ui.markdown().classes("w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs max-h-40 overflow-y-auto mt-2")
+            csv_report_preview.visible = False
+            
             # 底部动作栏
             with ui.row().classes("w-full justify-end gap-2 mt-4"):
                 ui.button("取消", on_click=csv_excel_dialog.close).props("flat").classes("text-slate-500 text-sm")
-                ui.button("开始无损转换", on_click=run_select_conversion).classes("bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow-sm")
+                ui.button("CSV → Excel 转换", on_click=run_select_conversion).classes("bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold shadow-sm")
 
     # --- PDF/Markdown 转换与对账对话框 (Dialog) ---
     with ui.dialog() as pdf_md_dialog:
@@ -1707,7 +2457,8 @@ def main_page() -> None:
             # 底部动作栏
             with ui.row().classes("w-full justify-end gap-2 mt-4"):
                 ui.button("取消", on_click=pdf_md_dialog.close).props("flat").classes("text-slate-500 text-sm")
-                ui.button("开始解析与对账", on_click=run_pdf_conversion).classes("bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow-sm")
+                ui.button("PDF 转 MD", on_click=run_pdf_to_md_conversion).classes("bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold shadow-sm")
+                ui.button("MD 转 CSV", on_click=run_md_to_csv_conversion).classes("bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold shadow-sm")
 
     # --- PDF 查重與去密對話框 (Dialog) ---
     with ui.dialog() as pdf_dedup_dialog:
@@ -2023,8 +2774,8 @@ def main_page() -> None:
                             "id": rid,
                             "taxpayer_name": name,
                             "credit_code": credit_code,
-                            "income": f"¥{float(income):,.2f}",
-                            "tax_payable": f"¥{float(tax_payable):,.2f}",
+                            "income": f"¥{float(tax_val.clean_numeric_string(str(income))):,.2f}",
+                            "tax_payable": f"¥{float(tax_val.clean_numeric_string(str(tax_payable))):,.2f}",
                             "status": status,
                             "details": details
                         })
@@ -2099,9 +2850,9 @@ def main_page() -> None:
                         record = {
                             "纳税人名称/单位": name,
                             "信用代码/身份证": credit_code,
-                            "收入所得总额": float(income),
-                            "允许扣除总额": float(deductions),
-                            "核算应纳税额": float(tax_payable),
+                            "收入所得总额": float(tax_val.clean_numeric_string(str(income))),
+                            "允许扣除总额": float(tax_val.clean_numeric_string(str(deductions))),
+                            "核算应纳税额": float(tax_val.clean_numeric_string(str(tax_payable))),
                             "税收分类": "个人所得税" if tax_type == "individual" else "企业所得税",
                             "核算时间": created_at
                         }
@@ -2207,8 +2958,8 @@ def main_page() -> None:
                     excel_path = archive_dir / f"tax_backup_{timestamp_file}.xlsx"
                     
                     df = pd.DataFrame([{
-                        "纳税人姓名/企业名": r[0], "信用代码/证件": r[1], "年所得收入": float(r[2]),
-                        "扣除项": float(r[3]), "核定税额": float(r[4]), "税种": r[5], "时间": r[6]
+                        "纳税人姓名/企业名": r[0], "信用代码/证件": r[1], "年所得收入": float(tax_val.clean_numeric_string(str(r[2]))),
+                        "扣除项": float(tax_val.clean_numeric_string(str(r[3]))), "核定税额": float(tax_val.clean_numeric_string(str(r[4]))), "税种": r[5], "时间": r[6]
                     } for r in rows])
                     df.to_excel(excel_path, index=False)
                     
@@ -2316,7 +3067,7 @@ def main_page() -> None:
             with ui.row().classes("w-full justify-between items-center"):
                 with ui.row().classes("items-center gap-2"):
                     ui.icon("filter_alt", size="1.8rem").classes("text-indigo-600")
-                    ui.label("平仓成交数据整理控制台").classes("text-lg font-bold text-slate-800")
+                    ui.label("md平仓成交数据整理控制台").classes("text-lg font-bold text-slate-800")
                 ui.button(icon="close", on_click=md_closing_dialog.close).props("flat round dense").classes("text-slate-400")
             
             ui.separator()
@@ -2354,6 +3105,134 @@ def main_page() -> None:
             with ui.row().classes("w-full justify-end gap-2 mt-4"):
                 ui.button("取消", on_click=md_closing_dialog.close).props("flat").classes("text-slate-500 text-sm")
                 ui.button("开始提取与整理", on_click=run_md_closing_organization).classes("bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow-sm")
+
+    # --- 模块 12: CSV 平仓交易整理对话框 (Dialog) ---
+    with ui.dialog() as csv_closing_dialog:
+        with ui.card().classes("w-[600px] p-6 gap-4 bg-white rounded-xl shadow-2xl"):
+            with ui.row().classes("w-full justify-between items-center"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("filter_alt", size="1.8rem").classes("text-indigo-600")
+                    ui.label("CSV 平仓成交数据整理控制台").classes("text-lg font-bold text-slate-800")
+                ui.button(icon="close", on_click=csv_closing_dialog.close).props("flat round dense").classes("text-slate-400")
+            
+            ui.separator()
+            
+            ui.label("步骤 1：设定整理交易的时间段 (选填，留空代表不限制)").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+            with ui.row().classes("w-full gap-4"):
+                csv_closing_start_date = ui.input(
+                    label="开始日期 (格式: YYYY-MM-DD)",
+                    placeholder="例如: 2026-01-01"
+                ).classes("flex-1")
+                csv_closing_end_date = ui.input(
+                    label="结束日期 (格式: YYYY-MM-DD)",
+                    placeholder="例如: 2026-06-30"
+                ).classes("flex-1")
+                
+            ui.label("步骤 2：上传包含交易流水的 CSV (.csv) 文件").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+            ui.upload(
+                label="拖拽或选择原始交易 CSV 成果文件",
+                auto_upload=True,
+                multiple=True,
+                on_upload=on_csv_upload_closing
+            ).classes("w-full border border-dashed border-slate-200 rounded-xl p-1").props("accept=.csv")
+            
+            # 进度与状态
+            csv_closing_progress = ui.linear_progress(value=0.0, show_value=False).classes("w-full rounded-full")
+            csv_closing_progress.visible = False
+            csv_closing_status = ui.label("等待启动...").classes("text-xs text-slate-500 font-mono")
+            csv_closing_status.visible = False
+            
+            # 下载容器 (报告 + 单一 ZIP 文件)
+            csv_closing_download_container = ui.row().classes("w-full justify-center gap-2 mt-2")
+            csv_closing_download_container.visible = False
+            
+            # 底部动作栏
+            with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                ui.button("取消", on_click=csv_closing_dialog.close).props("flat").classes("text-slate-500 text-sm")
+                ui.button("开始提取与整理", on_click=run_csv_closing_organization).classes("bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow-sm")
+
+    # --- 模块 1 扩展: Excel → CSV 转换对话框 (Dialog) ---
+    with ui.dialog() as excel_csv_dialog:
+        with ui.card().classes("w-[580px] p-6 gap-4 bg-white rounded-xl shadow-2xl"):
+            with ui.row().classes("w-full justify-between items-center"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("table_view", size="1.8rem").classes("text-teal-600")
+                    ui.label("Excel → CSV 无损拆分转换控制台").classes("text-lg font-bold text-slate-800")
+                ui.button(icon="close", on_click=excel_csv_dialog.close).props("flat round dense").classes("text-slate-400")
+
+            ui.separator()
+
+            ui.label("步骤 1：选择文件存储位置环境").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+            excel_source_type = ui.toggle(
+                options={"server": "本机/Linux后端", "client": "浏览器客户端"},
+                value="server"
+            ).classes("w-full")
+
+            # --- 本机/后端服务器 区域 ---
+            with ui.column().classes("w-full gap-3") as excel_server_section:
+                ui.label("本机 Excel 文件夹绝对路径").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+                excel_local_dir_input = ui.input(
+                    label="输入 Linux 后端 Excel 所在的文件夹路径",
+                    value=str(INPUT_EXCEL_DIR),
+                    on_change=refresh_excel_file_list
+                ).classes("w-full")
+
+                ui.label("选择待转换的 Excel 文件").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+                excel_file_select = ui.select(
+                    options=["[全部Excel文件]"],
+                    value="[全部Excel文件]",
+                    label="待转换的 Excel 文件 (支持 .xlsx / .xls / .xlsm)"
+                ).classes("w-full")
+
+            # --- 浏览器客户端 区域 ---
+            with ui.column().classes("w-full gap-3") as excel_client_section:
+                ui.label("选择并上传客户端电脑的 Excel 文件").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+                ui.upload(
+                    label="可拖拽 Excel 文件至此处上传（.xlsx / .xls / .xlsm）",
+                    auto_upload=True,
+                    multiple=True,
+                    on_upload=on_excel_upload
+                ).classes("w-full border border-dashed border-slate-200 rounded-xl p-1").props("accept=.xlsx,.xls,.xlsm,.xlsb")
+
+                ui.label("选择已上传的 Excel 文件").classes("text-xs font-bold text-slate-500 uppercase tracking-wide")
+                client_excel_file_select = ui.select(
+                    options=["[全部已上传Excel文件]"],
+                    value="[全部已上传Excel文件]",
+                    label="待转换的已上传 Excel 文件"
+                ).classes("w-full")
+
+            # 动态绑定显示隐藏
+            excel_server_section.bind_visibility_from(excel_source_type, "value", value="server")
+            excel_client_section.bind_visibility_from(excel_source_type, "value", value="client")
+
+            # 说明提示
+            with ui.row().classes("w-full items-start gap-2 p-3 bg-teal-50 rounded-lg border border-teal-200"):
+                ui.icon("info", size="1rem").classes("text-teal-600 mt-0.5 shrink-0")
+                ui.label(
+                    "多 Sheet 自动拆分：单 Sheet 输出「原文件名.csv」；多 Sheet 分别输出「原文件名_工作表名.csv」。"
+                    "所有数值以字符串读取，发票号/纳税人识别号等长数字不会丢失前导零。"
+                ).classes("text-xs text-teal-700 leading-relaxed")
+
+            # 进度指示器
+            excel_dialog_progress = ui.linear_progress(value=0.0, show_value=False).classes("w-full rounded-full")
+            excel_dialog_progress.visible = False
+            excel_dialog_status = ui.label("等待启动...").classes("text-xs text-slate-500 font-mono")
+            excel_dialog_status.visible = False
+
+            # 下载链接容器
+            excel_download_container = ui.row().classes("w-full justify-center gap-2 mt-2")
+            excel_download_container.visible = False
+
+            # 报告预览展示组件
+            excel_report_preview = ui.markdown().classes("w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs max-h-40 overflow-y-auto mt-2")
+            excel_report_preview.visible = False
+
+            # 底部动作栏
+            with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                ui.button("取消", on_click=excel_csv_dialog.close).props("flat").classes("text-slate-500 text-sm")
+                ui.button("Excel → CSV 转换", on_click=run_excel_to_csv_conversion).classes(
+                    "bg-teal-600 hover:bg-teal-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow-sm"
+                )
 
     # 頁面載入時強制彈窗輸入機構名稱
     ui.timer(0.1, prompt_bank_name, once=True)

@@ -63,6 +63,22 @@ def validate_taxpayer_id(tax_id: str) -> dict[str, Any]:
             
     return {"valid": False, "type": "未知/不合规识别号"}
 
+def clean_numeric_string(val_str: str) -> str:
+    """
+    清洗数字字符串，支持任意货币符号、千分位逗号、会计括号负数、尾部负号、以及常见币种后缀。
+    """
+    s = val_str.strip()
+    cleaned = s.replace("$", "").replace("¥", "").replace("£", "").replace("€", "").replace("￥", "").replace(",", "").strip()
+    for currency in ("SGD", "USD", "HKD", "EUR", "CNY", "GBP", "CAD", "AUD", "NZD", "JPY", "KRW", "TWD", "元", "股", "万", "亿"):
+        cleaned = cleaned.replace(currency, "").replace(currency.lower(), "")
+    cleaned = cleaned.strip()
+    
+    if cleaned.startswith("(") and cleaned.endswith(")") and len(cleaned) > 2:
+        cleaned = "-" + cleaned[1:-1]
+    if cleaned.endswith("-") and len(cleaned) > 1:
+        cleaned = "-" + cleaned[:-1]
+    return cleaned
+
 def validate_declaration_data(
     taxpayer_name: str,
     taxpayer_id: str,
@@ -84,15 +100,18 @@ def validate_declaration_data(
         errors.append(f"识别号 '{taxpayer_id}' 格式错误或未通过国标校验和校验")
         
     # 3. 检查数值
+    cleaned_income = clean_numeric_string(income_str)
+    cleaned_deductions = clean_numeric_string(deductions_str)
+    
     try:
-        income = float(income_str)
+        income = float(cleaned_income)
         if income < 0:
             errors.append("总收入金额不能为负数")
     except ValueError:
         errors.append("总收入金额必须为合法数值")
         
     try:
-        deductions = float(deductions_str)
+        deductions = float(cleaned_deductions)
         if deductions < 0:
             errors.append("扣除金额不能为负数")
     except ValueError:

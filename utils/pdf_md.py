@@ -12,6 +12,25 @@ from typing import Any
 import pandas as pd
 import pdfplumber
 
+def clean_commas_from_number(val: str) -> str:
+    """
+    如果字符串是一个带有千分位逗号的数字，则清洗掉其中的逗号。
+    例如：'13,649.60' -> '13649.60', '1,500' -> '1500'
+    """
+    val_strip = val.strip()
+    if not val_strip:
+        return val
+    # 匹配带千分位逗号的数字，包括前导正负号、货币符号及小数。用外层括号捕获整个前缀。
+    pattern = r'^(([+\-]|[$¥]|SGD|USD|\s)*)(\d{1,3}(,\d{3})+)(\.\d+)?$'
+    match = re.match(pattern, val_strip, re.IGNORECASE)
+    if match:
+        prefix = match.group(1) or ""
+        number_part = match.group(3).replace(",", "")
+        suffix = match.group(5) or ""
+        return f"{prefix}{number_part}{suffix}".strip()
+    return val
+
+
 @dataclass(frozen=True)
 class ParserProgress:
     """非同步進度與審計日誌強型別契約"""
@@ -172,13 +191,17 @@ class PDFBatchParser:
                 amount_idx = idx
 
         def parse_val(val: str) -> float | None:
-            cleaned = val.replace("$", "").replace("¥", "").replace("SGD", "").replace("USD", "").replace(",", "").strip()
+            s = val.strip()
+            cleaned = s.replace("$", "").replace("¥", "").replace("£", "").replace("€", "").replace("￥", "").replace(",", "").strip()
+            for currency in ("SGD", "USD", "HKD", "EUR", "CNY", "GBP", "CAD", "AUD", "NZD", "JPY", "KRW", "TWD", "元", "股", "万", "亿"):
+                cleaned = cleaned.replace(currency, "").replace(currency.lower(), "")
+            cleaned = cleaned.strip()
             if not cleaned:
                 return None
-            if cleaned.startswith("(") and cleaned.endswith(")"):
+            if cleaned.startswith("(") and cleaned.endswith(")") and len(cleaned) > 2:
                 cleaned = "-" + cleaned[1:-1]
             try:
-                if cleaned.endswith("-"):
+                if cleaned.endswith("-") and len(cleaned) > 1:
                     cleaned = "-" + cleaned[:-1]
                 return float(cleaned)
             except ValueError:
@@ -313,7 +336,11 @@ class PDFBatchParser:
                     
                     # 5. 轉換為帶有原始頁碼列的 Markdown 表格
                     headers = list(optimized_table[0]) + ["原始PDF頁碼"]
-                    rows = [list(row) + [f"P.{p_idx}"] for row in optimized_table[1:]]
+                    rows = []
+                    for row in optimized_table[1:]:
+                        cleaned_row = [clean_commas_from_number(cell) for cell in row]
+                        cleaned_row.append(f"P.{p_idx}")
+                        rows.append(cleaned_row)
                     
                     df = pd.DataFrame(rows, columns=headers)
                     page_md_blocks.append(df.to_markdown(index=False))

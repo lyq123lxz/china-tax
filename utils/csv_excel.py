@@ -7,7 +7,13 @@ utils/csv_excel.py
 import asyncio
 from collections.abc import Callable
 from pathlib import Path
+import warnings
+
+# 忽略 openpyxl 样式相关的 UserWarning，防止缺少默认样式引起日志输出或在严格警告模式下报错
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+
 import pandas as pd
+
 
 class BatchConverter:
     """批量无损互转工具类 (CSV <-> Excel)"""
@@ -46,20 +52,29 @@ class BatchConverter:
         # 确保输出目录存在
         excel_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 写入 Excel
-        df.to_excel(excel_path, index=False)
+        # 写入 Excel（显式指定 openpyxl 引擎，兼容所有 pandas 版本）
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
 
     def _convert_excel_to_csv_sync(self, excel_path: Path, csv_path: Path) -> None:
         """
         同步执行 Excel 到 CSV 的转换 (阻塞操作)
         """
-        # 强类型读取 Excel，指定 dtype=str 确保长数字安全
-        df: pd.DataFrame = pd.read_excel(excel_path, dtype=str)
-        
+        # 强类型读取 Excel：
+        #   engine='openpyxl'       — 避免 xlrd>=2 不支持 .xlsx 的崩溃
+        #   dtype=str               — 长数字（发票号/纳税人识别号）无损保留
+        #   keep_default_na=False   — 空单元格读为空字符串而非 NaN
+        df: pd.DataFrame = pd.read_excel(
+            excel_path,
+            dtype=str,
+            engine="openpyxl",
+            keep_default_na=False,
+        )
+
         # 确保输出目录存在
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 写入 CSV (优先使用 utf-8-sig 编码，防止 Excel 打开中文乱码)
+        # 写入 CSV (utf-8-sig 编码防止 Excel 打开中文乱码)
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
     async def convert_file(self, file_path: Path, mode: str = "csv_to_excel") -> Path:
@@ -69,15 +84,17 @@ class BatchConverter:
         在同目录中生成同名文件，若遇同名文件则在名称后增加 _x 后缀。
         """
         resolved_file = Path(file_path).resolve()
+        # Bug Fix: 输出路径必须指向 self.output_dir，而非输入文件所在目录
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         if mode == "csv_to_excel":
-            output_path = resolved_file.parent / f"{resolved_file.stem}.xlsx"
+            output_path = self.output_dir / f"{resolved_file.stem}.xlsx"
             while output_path.exists():
                 output_path = output_path.parent / f"{output_path.stem}_x.xlsx"
             # 使用 asyncio.to_thread 运行阻塞型 I/O 操作
             await asyncio.to_thread(self._convert_csv_to_excel_sync, resolved_file, output_path)
             return output_path
         elif mode == "excel_to_csv":
-            output_path = resolved_file.parent / f"{resolved_file.stem}.csv"
+            output_path = self.output_dir / f"{resolved_file.stem}.csv"
             while output_path.exists():
                 output_path = output_path.parent / f"{output_path.stem}_x.csv"
             await asyncio.to_thread(self._convert_excel_to_csv_sync, resolved_file, output_path)

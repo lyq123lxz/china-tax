@@ -14,6 +14,24 @@ from config.tax_rates import (
     CORPORATE_TAX_SMALL_RATE,
 )
 
+def clean_decimal_str(val_str: str) -> str:
+    """
+    清洗数字字符串以转换为 Decimal，支持任意货币符号、千分位逗号、会计括号负数、尾部负号、以及常见币种后缀。
+    """
+    s = val_str.strip()
+    cleaned = s.replace("$", "").replace("¥", "").replace("£", "").replace("€", "").replace("￥", "").replace(",", "").strip()
+    for currency in ("SGD", "USD", "HKD", "EUR", "CNY", "GBP", "CAD", "AUD", "NZD", "JPY", "KRW", "TWD", "元", "股", "万", "亿"):
+        cleaned = cleaned.replace(currency, "").replace(currency.lower(), "")
+    cleaned = cleaned.strip()
+    
+    if cleaned.startswith("(") and cleaned.endswith(")") and len(cleaned) > 2:
+        cleaned = "-" + cleaned[1:-1]
+    if cleaned.endswith("-") and len(cleaned) > 1:
+        cleaned = "-" + cleaned[:-1]
+    if not cleaned:
+        return "0.00"
+    return cleaned
+
 def calculate_individual_tax(income_str: str, deductions_str: str) -> dict[str, Any]:
     """
     计算个人所得税（综合所得年纳税额）
@@ -22,8 +40,8 @@ def calculate_individual_tax(income_str: str, deductions_str: str) -> dict[str, 
     :param deductions_str: 专项扣除、专项附加扣除等扣除总额 (元)
     :return: 包含各项计算细节的字典
     """
-    income = Decimal(income_str)
-    deductions = Decimal(deductions_str)
+    income = Decimal(clean_decimal_str(income_str))
+    deductions = Decimal(clean_decimal_str(deductions_str))
     
     # 应纳税所得额 = 收入 - 扣除 - 起征点
     taxable_income = income - deductions - INDIVIDUAL_TAX_THRESHOLD
@@ -65,7 +83,7 @@ def calculate_corporate_tax(profit_str: str, is_high_tech: bool) -> dict[str, An
     :param is_high_tech: 是否为国家需要扶持的高新技术企业
     :return: 包含各项计算细节的字典
     """
-    profit = Decimal(profit_str)
+    profit = Decimal(clean_decimal_str(profit_str))
     if profit <= 0:
         return {
             "taxable_income": "0.00",

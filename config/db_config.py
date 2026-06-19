@@ -182,7 +182,7 @@ def get_connection() -> DBConnection:
             # 回退至 SQLite
 
     DB_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15.0)
     return DBConnection(conn, is_pg=False)
 
 async def test_pg_connection(host: str, dbname: str, user: str, port: int, password: str = "") -> dict[str, Any]:

@@ -1,13 +1,15 @@
 """
-utils/md_closing.py
-Markdown 平仓交易提取与整理工具
+utils/csv_closing.py
+CSV 平仓交易提取与整理工具 (模块 12)
 支持指定时间段过滤，分析平仓成交的标的并生成 Excel 报告。
-遵循 md 文件中的原始列字段与顺序，如为英文列名则显示为中英双语。
+遵循 CSV 文件中的原始列字段与顺序，如为英文列名则显示为中英双语。
 自动匹配平仓标的与其对应的开仓记录（支持买入开仓、卖空开仓、IPO开仓等）。
 生成含有 3 张工作表（总表、只有开仓、只有平仓）的 Excel 账单。
 """
 
 import re
+import csv
+import io
 import warnings
 from pathlib import Path
 from datetime import datetime
@@ -60,7 +62,6 @@ def to_bilingual_header(h: str) -> str:
     if h_lower in BILINGUAL_MAP:
         return BILINGUAL_MAP[h_lower]
         
-    # 子字符串模糊匹配，例如 "trade price" -> "trade price (单价)"
     for key, bilingual in BILINGUAL_MAP.items():
         if key in h_lower:
             trans = bilingual.split('(')[1]
@@ -180,54 +181,32 @@ def parse_float(val: str) -> float:
     except ValueError:
         return 0.0
 
-def parse_markdown_tables(md_content: str) -> list[list[list[str]]]:
+def parse_csv_tables(csv_content: str) -> list[list[list[str]]]:
     """
-    解析 Markdown 中的所有表格。
-    每个表格表示为一个包含多行的列表，每一行是一个字符串单元格的列表。
-    """
-    tables = []
-    lines = md_content.splitlines()
-    
-    in_table = False
-    current_table_lines = []
-    
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith('|') and stripped.endswith('|'):
-            in_table = True
-            current_table_lines.append(stripped)
-        else:
-            if in_table:
-                if len(current_table_lines) >= 3:
-                    table_data = _parse_single_markdown_table_raw(current_table_lines)
-                    if table_data:
-                        tables.append(table_data)
-                current_table_lines = []
-                in_table = False
-                
-    if in_table and len(current_table_lines) >= 3:
-        table_data = _parse_single_markdown_table_raw(current_table_lines)
-        if table_data:
-            tables.append(table_data)
-            
-    return tables
+    将 CSV 内容解析为多张表（根据空行分隔）。
+    返回: list[list[list[str]]], 即 list of tables, each table is list of rows, each row is list of cells.
 
-def _parse_single_markdown_table_raw(lines: list[str]) -> list[list[str]]:
-    """解析单张 Markdown 表格，返回行与单元格的原始列表，过滤掉分隔线行"""
-    rows = []
-    for line in lines:
-        cells = [c.strip() for c in line.split('|')[1:-1]]
-        # 检查是否是分割线行如 |---|:---|
-        is_sep = True
-        for cell in cells:
-            cell_clean = cell.replace(':', '').replace('-', '').strip()
-            if cell_clean:
-                is_sep = False
-                break
-        if is_sep and cells:
-            continue
-        rows.append(cells)
-    return rows
+    Bug Fix 10: 原先用 csv_content.splitlines() 再传入 csv.reader，
+    无法处理内嵌换行符的带引号字段；
+    改用 csv.reader(io.StringIO(csv_content)) 正确处理引号内多行字段。
+    """
+    reader = csv.reader(io.StringIO(csv_content))
+
+    tables: list[list[list[str]]] = []
+    current_table: list[list[str]] = []
+    for row in reader:
+        # 检查是否是空行或全部是空字符串的行
+        is_empty = not row or all(c.strip() == "" for c in row)
+        if is_empty:
+            if current_table:
+                tables.append(current_table)
+                current_table = []
+        else:
+            current_table.append([c.strip() for c in row])
+
+    if current_table:
+        tables.append(current_table)
+    return tables
 
 def classify_trade_type(action: str, asset: str) -> str:
     """
@@ -238,7 +217,7 @@ def classify_trade_type(action: str, asset: str) -> str:
     action_lower = action.strip().lower()
     asset_lower = asset.strip().lower()
     
-    # 没成交的关键字过滤：如果包含未成交、撤单、已撤销、canceled、expired等，归类为 other 并忽略
+    # 没成交的关键字过滤
     non_execution_kws = ["没成交", "未成交", "已撤销", "撤单", "已撤", "废单", "canceled", "cancelled", "expired", "rejected", "failed", "void"]
     if any(kw in action_lower or kw in asset_lower for kw in non_execution_kws):
         return "other"
@@ -634,7 +613,6 @@ def extract_closing_trades(
     for item in target_closing_items:
         bilingual_close_only.append(to_bilingual_row(item))
         
-    # 在这个阶段，bilingual_combined 可以先简单拼接，generate_closing_report 会在全局过滤后对其重新排序和合并
     bilingual_combined = bilingual_open_only + bilingual_close_only
     
     return bilingual_combined, bilingual_open_only, bilingual_close_only, seen_bilingual_headers
@@ -713,10 +691,10 @@ def generate_closing_report(
     total_close = len(close_trades)
     
     lines = [
-        "# 平仓成交标的提取与整理报告 (Markdown 版)",
+        "# 平仓成交标的提取与整理报告 (CSV 版)",
         f"\n**整理时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "\n## 1. 整理参数与摘要",
-        f"- **源数据格式**: Markdown (.md)",
+        f"- **源数据格式**: CSV (.csv)",
         f"- **设定筛选时间段**: {start_date_str or '未限定'} 至 {end_date_str or '未限定'}",
         f"- **总匹配交易记录**: {total} 笔",
         f"  - **开仓记录 (IPO/买入/开空等)**: {total_open} 笔",
