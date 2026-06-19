@@ -176,6 +176,9 @@ def generate_pdf_conversion_report(all_alerts: list[dict[str, Any]], output_dir:
     reviews = sum(1 for a in all_alerts if a.get("status") == "NEED_VISUAL_REVIEW")
     successes = sum(1 for a in all_alerts if a.get("status") == "success")
     
+    # 篩選出需要人工審核的警告/異常
+    manual_reviews = [a for a in all_alerts if a.get("status") in ("warning", "NEED_VISUAL_REVIEW", "error")]
+    
     lines = [
         "# PDF 轉 Markdown 解析與對賬勾稽審計報告",
         f"\n**產生時間**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -185,10 +188,26 @@ def generate_pdf_conversion_report(all_alerts: list[dict[str, Any]], output_dir:
         f"- **人工視覺覆核 (NEED_VISUAL_REVIEW)**: {reviews} 處",
         f"- **對賬警告件數**: {warnings} 處",
         f"- **解析錯誤件數**: {errors} 處",
-        "\n## 2. 審計警示明細清單",
+        "\n## 2. 需要人工審核的勾稽與警示清單"
+    ]
+    
+    if manual_reviews:
+        lines.extend([
+            "| 檔案名稱 | 頁碼 | 警示類型 | 警示狀態 | 警示訊息 |",
+            "| :--- | :--- | :--- | :--- | :--- |"
+        ])
+        for a in manual_reviews:
+            lines.append(
+                f"| {a.get('file', 'Unknown')} | {a.get('page', 0)} | {a.get('type', 'None')} | {a.get('status', 'info')} | {a.get('message', '').replace('|', 'I')} |"
+            )
+    else:
+        lines.append("\n🟢 **恭喜，未發現需要人工審核的勾稽異常或警告項目。**")
+        
+    lines.extend([
+        "\n## 3. 全量審計明细清單",
         "| 檔案名稱 | 頁碼 | 警示類型 | 警示狀態 | 警示訊息 |",
         "| :--- | :--- | :--- | :--- | :--- |"
-    ]
+    ])
     for a in all_alerts:
         lines.append(
             f"| {a.get('file', 'Unknown')} | {a.get('page', 0)} | {a.get('type', 'None')} | {a.get('status', 'info')} | {a.get('message', '').replace('|', 'I')} |"
