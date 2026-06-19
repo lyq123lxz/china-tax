@@ -59,8 +59,9 @@ from utils.pdf_check import PDFDeduplicator
 # 全局引用与状态管理，用于更新 UI 状态
 # ---------------------------------------------------------
 BASE_DIR = Path(__file__).parent.resolve()
-INPUT_DIR = BASE_DIR / "data" / "input"
-OUTPUT_DIR = BASE_DIR / "data" / "output"
+# 預設初始化為未選擇狀態的虛擬路徑，但不在硬碟上建立它
+INPUT_DIR = BASE_DIR / "data" / "unselected" / "input"
+OUTPUT_DIR = BASE_DIR / "data" / "unselected" / "output"
 INPUT_PDF_DIR = INPUT_DIR / "pdf"
 INPUT_CSV_DIR = INPUT_DIR / "csv"
 INPUT_EXCEL_DIR = INPUT_DIR / "excel"
@@ -78,12 +79,11 @@ def update_active_paths(bank_name: str) -> None:
     global OUTPUT_PDF_DIR, OUTPUT_PDF_DECRYPT_DIR, OUTPUT_CSV_DIR, OUTPUT_EXCEL_DIR, OUTPUT_MD_DIR
     
     clean_name = "".join(c for c in bank_name if c.isalnum() or c in ("-", "_", " ")).strip()
-    if clean_name:
-        INPUT_DIR = BASE_DIR / "data" / clean_name / "input"
-        OUTPUT_DIR = BASE_DIR / "data" / clean_name / "output"
-    else:
-        INPUT_DIR = BASE_DIR / "data" / "input"
-        OUTPUT_DIR = BASE_DIR / "data" / "output"
+    if not clean_name:
+        raise ValueError("金融機構名稱不得為空")
+        
+    INPUT_DIR = BASE_DIR / "data" / clean_name / "input"
+    OUTPUT_DIR = BASE_DIR / "data" / clean_name / "output"
         
     INPUT_PDF_DIR = INPUT_DIR / "pdf"
     INPUT_CSV_DIR = INPUT_DIR / "csv"
@@ -205,15 +205,17 @@ def clear_data_directories(preserve_files: list[Path] = None, clear_archives: bo
                     if item.name == "archives" and not clear_archives:
                         continue
                     _clean_subdir(item)
-                    # 清理後如果目錄為空且不是預設的 input/output 目錄，則將其刪除
-                    if not any(item.iterdir()) and item.name not in ("input", "output"):
+                    # 清理後如果目錄為空，則將其刪除
+                    if not any(item.iterdir()):
                         item.rmdir()
                 except Exception as e:
                     print(f"清理 {item} 失败: {e}")
 
-    # 確保預設的輸入輸出目錄存在
-    (data_root / "input").mkdir(parents=True, exist_ok=True)
-    (data_root / "output").mkdir(parents=True, exist_ok=True)
+    # 確保當前活動的輸入輸出目錄存在（若已經設定了金融機構）
+    if INPUT_DIR and "unselected" not in str(INPUT_DIR):
+        INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    if OUTPUT_DIR and "unselected" not in str(OUTPUT_DIR):
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 import config.db_config as db_config
@@ -1149,21 +1151,84 @@ def main_page() -> None:
                         ui.icon("cleaning_services", size="1.2rem").classes("text-amber-500")
                         ui.label("缓存与临时目录控制").classes("text-xs font-bold text-slate-700 uppercase tracking-wide")
                     
+                    async def prompt_bank_name():
+                        nonlocal bank_name_input
+                        with ui.dialog().props('persistent') as dialog, ui.card().classes('p-6 w-96 gap-4'):
+                            ui.label('🔑 啟用目錄隔離系統').classes('text-lg font-bold text-slate-800')
+                            ui.label('請先輸入金融機構名稱（如：富途證券 / 招商銀行），系統將為此機構建立獨立的資料夾隔離環境。').classes('text-xs text-slate-500')
+                            
+                            name_input = ui.input(
+                                label='金融機構名稱',
+                                placeholder='例如：富途證券 / 招商銀行',
+                                validation={'名稱不能為空': lambda v: bool(v and v.strip())}
+                            ).classes('w-full')
+                            
+                            def on_confirm():
+                                val = name_input.value
+                                if val and val.strip():
+                                    update_active_paths(val)
+                                    if bank_name_input:
+                                        bank_name_input.set_value(val)
+                                    
+                                    # 建立目錄
+                                    INPUT_PDF_DIR.mkdir(parents=True, exist_ok=True)
+                                    INPUT_CSV_DIR.mkdir(parents=True, exist_ok=True)
+                                    INPUT_EXCEL_DIR.mkdir(parents=True, exist_ok=True)
+                                    INPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
+                                    OUTPUT_PDF_DIR.mkdir(parents=True, exist_ok=True)
+                                    OUTPUT_PDF_DECRYPT_DIR.mkdir(parents=True, exist_ok=True)
+                                    OUTPUT_CSV_DIR.mkdir(parents=True, exist_ok=True)
+                                    OUTPUT_EXCEL_DIR.mkdir(parents=True, exist_ok=True)
+                                    OUTPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
+                                    
+                                    # 更新所有路徑輸入框
+                                    if local_dir_input:
+                                        local_dir_input.set_value(str(INPUT_CSV_DIR))
+                                    if pdf_dedup_local_dir_input:
+                                        pdf_dedup_local_dir_input.set_value(str(INPUT_PDF_DIR))
+                                    if pdf_dedup_out_dir_input:
+                                        pdf_dedup_out_dir_input.set_value(str(OUTPUT_PDF_DECRYPT_DIR))
+                                    if pdf_local_dir_input:
+                                        pdf_local_dir_input.set_value(str(INPUT_PDF_DIR))
+                                        
+                                    # 刷新清單
+                                    try:
+                                        refresh_file_list()
+                                        refresh_pdf_dedup_list()
+                                        refresh_pdf_list()
+                                    except Exception:
+                                        pass
+                                        
+                                    log_action(f"初始化目錄隔離：金融機構={val} -> 輸入目錄={INPUT_DIR}, 輸出目錄={OUTPUT_DIR}")
+                                    dialog.close()
+                                else:
+                                    ui.notify('請輸入有效的機構名稱！', type='warning')
+                                    
+                            ui.button('確認並進入系統', on_click=on_confirm).classes('w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2')
+                            name_input.on('keydown.enter', on_confirm)
+                            
+                        dialog.open()
+
                     def on_bank_name_change(e):
                         bank_name = (e.value if hasattr(e, 'value') else e.sender.value) or ""
+                        clean_name = "".join(c for c in bank_name if c.isalnum() or c in ("-", "_", " ")).strip()
+                        if not clean_name:
+                            ui.notify("⚠️ 金融機構名稱不能為空！", type="warning", position="top")
+                            ui.timer(0.1, prompt_bank_name, once=True)
+                            return
+                        
                         update_active_paths(bank_name)
                         
-                        # 建立券商目录下的格式子目录
-                        if bank_name:
-                            INPUT_PDF_DIR.mkdir(parents=True, exist_ok=True)
-                            INPUT_CSV_DIR.mkdir(parents=True, exist_ok=True)
-                            INPUT_EXCEL_DIR.mkdir(parents=True, exist_ok=True)
-                            INPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
-                            OUTPUT_PDF_DIR.mkdir(parents=True, exist_ok=True)
-                            OUTPUT_PDF_DECRYPT_DIR.mkdir(parents=True, exist_ok=True)
-                            OUTPUT_CSV_DIR.mkdir(parents=True, exist_ok=True)
-                            OUTPUT_EXCEL_DIR.mkdir(parents=True, exist_ok=True)
-                            OUTPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
+                        # 建立券商目錄下的格式子目錄
+                        INPUT_PDF_DIR.mkdir(parents=True, exist_ok=True)
+                        INPUT_CSV_DIR.mkdir(parents=True, exist_ok=True)
+                        INPUT_EXCEL_DIR.mkdir(parents=True, exist_ok=True)
+                        INPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
+                        OUTPUT_PDF_DIR.mkdir(parents=True, exist_ok=True)
+                        OUTPUT_PDF_DECRYPT_DIR.mkdir(parents=True, exist_ok=True)
+                        OUTPUT_CSV_DIR.mkdir(parents=True, exist_ok=True)
+                        OUTPUT_EXCEL_DIR.mkdir(parents=True, exist_ok=True)
+                        OUTPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
                         
                         # 动态更新各模块输入/输出路径文本框的值
                         if local_dir_input:
@@ -1183,7 +1248,7 @@ def main_page() -> None:
                         except Exception:
                             pass
                             
-                        log_action(f"切换隔离目录：券商/银行名={bank_name or '默认'} -> 输入目录={INPUT_DIR}, 输出目录={OUTPUT_DIR}")
+                        log_action(f"切换隔离目录：券商/银行名={bank_name} -> 输入目录={INPUT_DIR}, 输出目录={OUTPUT_DIR}")
 
                     bank_name_input = ui.input(
                         label="银行及券商名称 (目录隔离)",
@@ -2027,6 +2092,9 @@ def main_page() -> None:
                 
             with ui.row().classes("w-full justify-end mt-2"):
                 ui.button("关闭", on_click=system_logs_dialog.close).props("flat").classes("text-slate-500 text-sm")
+
+    # 頁面載入時強制彈窗輸入機構名稱
+    ui.timer(0.1, prompt_bank_name, once=True)
 
 # 启动服务
 
