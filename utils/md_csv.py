@@ -10,8 +10,26 @@ from pathlib import Path
 from typing import Any
 
 def clean_value(val: str) -> str:
-    """清洗单元格值，去除可能影响 CSV 的首尾空格"""
-    return val.strip()
+    """清洗单元格值：去除首尾空格，并清洗千分位逗号"""
+    stripped = val.strip()
+    if "," not in stripped:
+        return stripped
+        
+    # 如果英文字符数多于 4，直接跳过以保留英文股票名称
+    letters = re.findall(r'[A-Za-z]', stripped)
+    if len(letters) > 4:
+        return stripped
+        
+    # 如果包含非金融单位的中文字符，跳过千分位清洗（避免地址等文本被误处理）
+    if any(c not in ('元', '股', '万', '亿', '币') for c in re.findall(r'[\u4e00-\u9fa5]', stripped)):
+        return stripped
+    # 千分位模式：1-3位数字开头，后跟一组或多组 ",xxx"
+    thousand_sep_pattern = r'\d{1,3}(,\d{3})+'
+    if re.search(thousand_sep_pattern, stripped):
+        def remove_sep(m: re.Match) -> str:
+            return m.group(0).replace(",", "")
+        return re.sub(thousand_sep_pattern, remove_sep, stripped)
+    return stripped
 
 def parse_markdown_tables_from_file(md_path: Path) -> list[list[list[str]]]:
     """

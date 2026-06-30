@@ -74,8 +74,11 @@ def clean_numeric_string(val_str: str) -> str:
     cleaned = cleaned.strip()
     
     if cleaned.startswith("(") and cleaned.endswith(")") and len(cleaned) > 2:
-        cleaned = "-" + cleaned[1:-1]
-    if cleaned.endswith("-") and len(cleaned) > 1:
+        inner = cleaned[1:-1].strip()
+        if inner.startswith("-") or inner.startswith("+"):
+            inner = inner[1:]
+        cleaned = "-" + inner
+    elif cleaned.endswith("-") and len(cleaned) > 1:
         cleaned = "-" + cleaned[:-1]
     return cleaned
 

@@ -228,13 +228,16 @@ class PDFDeduplicator:
                 progress_callback(current_progress, msg)
 
             # 將耗時的讀寫與解密任務丟到後台線程
-            result = await asyncio.to_thread(
-                self._process_single_file,
-                path,
-                passwords_list,
-                seen_hashes
-            )
-            results.append(result)
+            try:
+                result = await asyncio.to_thread(
+                    self._process_single_file,
+                    path,
+                    passwords_list,
+                    seen_hashes
+                )
+                results.append(result)
+            finally:
+                await asyncio.sleep(0.05)  # Yield to the event loop between files
 
         if progress_callback:
             progress_callback(1.0, f"處理完成，共處理 {total_files} 個檔案")

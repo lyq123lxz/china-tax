@@ -21,8 +21,8 @@ env/
 pdf/
 output/
 report.md
+data/
 
 # 資料庫檔案
 *.db
 data/*.db
-

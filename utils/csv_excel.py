@@ -42,6 +42,10 @@ class BatchConverter:
                 # 强类型读取，指定 dtype=str 确保长数字安全（杜绝科学计数法与丢失前导零）
                 df = pd.read_csv(csv_path, dtype=str, encoding=encoding)
                 break
+            except pd.errors.EmptyDataError:
+                # 如果是空数据错误（如文件为空或无有效列），直接构造空 DataFrame 且无需再试其他编码
+                df = pd.DataFrame()
+                break
             except Exception as err:
                 last_error = err
                 continue
@@ -128,12 +132,15 @@ class BatchConverter:
         for idx, file_path in enumerate(files, start=1):
             file_name = file_path.name
             try:
-                # 异步转换单文件，互不干扰
-                out_path = await self.convert_file(file_path, mode=mode)
-                converted_paths.append(out_path)
-                if progress_callback:
-                    progress_callback(idx, total_files, file_name, True, f"转换成功: {file_name}")
-            except Exception as err:
-                if progress_callback:
-                    progress_callback(idx, total_files, file_name, False, f"转换失败: {file_name}。原因: {str(err)}")
+                try:
+                    # 异步转换单文件，互不干扰
+                    out_path = await self.convert_file(file_path, mode=mode)
+                    converted_paths.append(out_path)
+                    if progress_callback:
+                        progress_callback(idx, total_files, file_name, True, f"转换成功: {file_name}")
+                except Exception as err:
+                    if progress_callback:
+                        progress_callback(idx, total_files, file_name, False, f"转换失败: {file_name}。原因: {str(err)}")
+            finally:
+                await asyncio.sleep(0.05)  # Yield to the event loop between files
         return converted_paths
